@@ -1,15 +1,15 @@
-# ALVR Flatpak
+# ALVR Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak
 
-This is an experimental Flatpak for ALVR! It is **only** compatible with the Flatpak version of Steam! For all non-Flatpak Steam users, use the AppImage that is already provided.
+This is an experimental Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak for ALVR! It is **only** compatible with the Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak version of Steam! For all non-Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak Steam users, use the AppImage that is already provided.
 
 ## Installation
 
 Currently, no precompiled builds are available. However, building from source does not take very long, and just requires the usage of the terminal.
 
-1. Install the Flatpak dependencies 
+1. Install the Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak dependencies 
 
 ```
-flatpak install flathub org.flatpak.Builder org.freedesktop.Sdk//22.08 \
+Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak install flathub org.Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak.Builder org.freedesktop.Sdk//22.08 \
     org.freedesktop.Sdk.Extension.llvm16//22.08 \
     org.freedesktop.Sdk.Extension.rust-stable//22.08
 ```
@@ -21,10 +21,10 @@ git clone https://github.com/alvr-org/ALVR.git
 cd ALVR
 ```
 
-3. Build and install the flatpak
+3. Build and install the Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak
 
 ```
-flatpak run org.flatpak.Builder --user --install --force-clean .flatpak-build-dir alvr/xtask/flatpak/com.valvesoftware.Steam.Utility.alvr.json
+Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak run org.Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak.Builder --user --install --force-clean .Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak-build-dir alvr/xtask/Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak/com.valvesoftware.Steam.Utility.alvr.json
 ```
 
 ## Usage
@@ -32,7 +32,7 @@ flatpak run org.flatpak.Builder --user --install --force-clean .flatpak-build-di
 To launch the ALVR Dashboard, run the following command:
 
 ```
-flatpak run --command=alvr_dashboard com.valvesoftware.Steam
+Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak run --command=alvr_dashboard com.valvesoftware.Steam
 ```
 
 ## Caveats

@@ -65,9 +65,9 @@ Since nightly releases can be unstable, always use matching versions for PC and 
 * Install SteamVR, **launch it once** then close it.
 * Run `alvr_dashboard` or ALVR from your DE's application launcher.
 
-### Flatpak
+### Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak
 
-For Flatpak users, refer to the instructions [here](https://github.com/alvr-org/ALVR/wiki/Flatpak)
+For Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak users, refer to the instructions [here](https://github.com/alvr-org/ALVR/wiki/Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak)
 
 ## Advanced usage
 

@@ -56,7 +56,7 @@
 * Add compatibility layer for surround audio devices (by @barnabwhy #2026)
 * Fix black screen on Vive Focus 3, XR Elite (by @zarik5)
 * Fix stuttering on Linux after recentering (by @galister #2017)
-* Fixes for Flatpak (by @jkcdarunday #1980, @Meister1593 #2039 #2044)
+* Fixes for Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak (by @jkcdarunday #1980, @Meister1593 #2039 #2044)
 * Change colors of lobby room (by @barnabwhy #1968)
 * Remove WIX installer (by @zarik5)
 * Remove AppImage (by @Meister1593 #2056)
@@ -88,7 +88,7 @@
 * Fix battery update during streming (by @zarik5)
 * Fix playspace recentering delay (by @zarik5)
 * Support eye tracking for Pico 4 Pro (by @zarik5 @Meister1593 #1897)
-* Add desktop file for Flatpak (by @Vixea #1906)
+* Add desktop file for Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak (by @Vixea #1906)
 * Install audio dependencies from the setup wizard (by @Meister1593 #1893, @zarik5)
 * Significantly reduce latency with NVENC on Linux (by @nowrep @Xaphiosis #1911)
 * Fix SteamVR hanging when restarting on Linux (by @Vixea @zarik5)
@@ -141,7 +141,7 @@
 
 ## v20.2.0
 
-* Add Flatpak build (by @CharlieQLe #1683 #1724 #1735 #1742, @Meister1593 #1769)
+* Add Installing-ALVR-and-using-SteamVR-on-Linux-through-Flatpak build (by @CharlieQLe #1683 #1724 #1735 #1742, @Meister1593 #1769)
 * Finish VRCFaceTracking support (by @zarik5)
   * You can download the ALVR Module from the VRCFaceTracking app itself.
   * Only supports the Quest Pro at the moment.
