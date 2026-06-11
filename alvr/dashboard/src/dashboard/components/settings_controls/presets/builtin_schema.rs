@@ -31,7 +31,7 @@ fn bool_modifier(target_path: &str, value: bool) -> PresetModifier {
 
 pub fn resolution_schema() -> PresetSchemaNode {
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
-        name: "resolution".into(),
+        name: "Resolution".into(),
         strings: [(
             "help".into(),
             "Choosing too high resolution (commonly 'High (width: 5184)') may result in high latency or black screen.".into(),
@@ -88,7 +88,7 @@ pub fn resolution_schema() -> PresetSchemaNode {
 
 pub fn framerate_schema() -> PresetSchemaNode {
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
-        name: "preferred_framerate".into(),
+        name: "Preferred framerate".into(),
         strings: HashMap::new(),
         flags: ["steamvr-restart".into()].into_iter().collect(),
         options: [60, 72, 80, 90, 120]
@@ -111,12 +111,16 @@ pub fn framerate_schema() -> PresetSchemaNode {
 
 pub fn codec_preset_schema() -> PresetSchemaNode {
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
-        name: "codec_preset".into(),
-        strings: [(
-            "help".into(),
-            "AV1 is only supported on newer gpus (AMD RX 7xxx+ , NVIDIA RTX 30xx+, Intel ARC)!"
+        name: "Codec preset".into(),
+        strings: [
+            (
+            "notice".into(),
+            "AV1 encoding is only supported on RDNA3, Ada Lovelace, Intel ARC or newer GPUs (AMD RX 7xxx+ , NVIDIA RTX 40xx+, Intel ARC)
+and on headsets that have XR2 Gen 2 onboard (Quest 3, Pico 4 Ultra).\n
+H264 encoding is currently NOT supported on Intel ARC GPUs on Windows."
                 .into(),
-        )]
+            ),
+        ]
         .into_iter()
         .collect(),
         flags: ["steamvr-restart".into()].into_iter().collect(),
@@ -140,7 +144,7 @@ pub fn codec_preset_schema() -> PresetSchemaNode {
 
 pub fn encoder_preset_schema() -> PresetSchemaNode {
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
-        name: "encoder_preset".into(),
+        name: "Encoder preset".into(),
         strings: [(
             "help".into(),
             "Selecting a quality too high may result in stuttering or still image!".into(),
@@ -162,7 +166,7 @@ pub fn encoder_preset_schema() -> PresetSchemaNode {
                     val_nv,
                 ),
                 string_modifier(
-                    "session_settings.video.encoder_config.amf.quality_preset.variant",
+                    "session_settings.video.encoder_config.quality_preset.variant",
                     val_amd,
                 ),
             ]
@@ -179,7 +183,7 @@ pub fn encoder_preset_schema() -> PresetSchemaNode {
 pub fn foveation_preset_schema() -> PresetSchemaNode {
     const PREFIX: &str = "session_settings.video.foveated_encoding";
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
-        name: "foveation_preset".into(),
+        name: "Foveation preset".into(),
         strings: [(
             "help".into(),
             "Foveation affects pixelation on the edges of \
@@ -231,7 +235,7 @@ shutterring and high encode/decode latency!"
 }
 
 #[cfg(target_os = "linux")]
-pub fn game_audio_schema(_: Vec<String>) -> PresetSchemaNode {
+pub fn game_audio_schema() -> PresetSchemaNode {
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
         name: "Headset speaker".into(),
         strings: HashMap::new(),
@@ -293,60 +297,42 @@ pub fn microphone_schema() -> PresetSchemaNode {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn game_audio_schema(devices: Vec<String>) -> PresetSchemaNode {
-    let mut game_audio_options = vec![
-        HigherOrderChoiceOption {
-            display_name: "Disabled".into(),
-            modifiers: vec![bool_modifier(
-                "session_settings.audio.game_audio.enabled",
-                false,
-            )],
-            content: None,
-        },
-        HigherOrderChoiceOption {
-            display_name: "System Default".to_owned(),
-            modifiers: vec![
-                bool_modifier("session_settings.audio.game_audio.enabled", true),
-                bool_modifier(
-                    "session_settings.audio.game_audio.content.device.set",
-                    false,
-                ),
-            ],
-            content: None,
-        },
-    ];
-
-    for name in devices {
-        game_audio_options.push(HigherOrderChoiceOption {
-            display_name: name.clone(),
-            modifiers: vec![
-                bool_modifier("session_settings.audio.game_audio.enabled", true),
-                bool_modifier("session_settings.audio.game_audio.content.device.set", true),
-                string_modifier(
-                    "session_settings.audio.game_audio.content.device.content.variant",
-                    "NameSubstring",
-                ),
-                string_modifier(
-                    "session_settings.audio.game_audio.content.device.content.NameSubstring",
-                    &name,
-                ),
-            ],
-            content: None,
-        })
-    }
-
+pub fn game_audio_schema() -> PresetSchemaNode {
     PresetSchemaNode::HigherOrderChoice(HigherOrderChoiceSchema {
         name: "Headset speaker".into(),
         strings: [(
-            "help".into(),
-            "You should keep this as default. Change the default audio device from the global OS settings".into(),
+            "notice".into(),
+            "You can change the default audio device from the system taskbar tray (bottom right)"
+                .into(),
         )]
         .into_iter()
         .collect(),
         flags: HashSet::new(),
-        options: game_audio_options.into_iter().collect(),
+        options: vec![
+            HigherOrderChoiceOption {
+                display_name: "Disabled".into(),
+                modifiers: vec![bool_modifier(
+                    "session_settings.audio.game_audio.enabled",
+                    false,
+                )],
+                content: None,
+            },
+            HigherOrderChoiceOption {
+                display_name: "System Default".to_owned(),
+                modifiers: vec![
+                    bool_modifier("session_settings.audio.game_audio.enabled", true),
+                    bool_modifier(
+                        "session_settings.audio.game_audio.content.device.set",
+                        false,
+                    ),
+                ],
+                content: None,
+            },
+        ]
+        .into_iter()
+        .collect(),
         default_option_display_name: "System Default".into(),
-        gui: ChoiceControlType::Dropdown,
+        gui: ChoiceControlType::ButtonGroup,
     })
 }
 
@@ -364,11 +350,11 @@ pub fn microphone_schema() -> PresetSchemaNode {
     if cfg!(windows) {
         for (key, display_name) in [
             ("Automatic", "Automatic"),
+            ("VAC", "Virtual Audio Cable"),
             ("VBCable", "VB Cable"),
             ("VoiceMeeter", "VoiceMeeter"),
             ("VoiceMeeterAux", "VoiceMeeter Aux"),
             ("VoiceMeeterVaio3", "VoiceMeeter VAIO3"),
-            ("VAC", "Virtual Audio Cable"),
         ] {
             microhone_options.push(HigherOrderChoiceOption {
                 display_name: display_name.into(),

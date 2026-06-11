@@ -7,15 +7,16 @@ pub use openvr_drivers::*;
 pub use openvrpaths::*;
 
 use alvr_common::{
-    anyhow::{bail, Result},
-    error, info, ConnectionState,
+    ConnectionState,
+    anyhow::{Result, bail},
+    error, info,
 };
 use alvr_events::EventType;
-use alvr_packets::{AudioDevicesList, ClientListAction, PathSegment, PathValuePair};
+use alvr_packets::{ClientConnectionsAction, PathSegment, PathValuePair};
 use alvr_session::{ClientConnectionConfig, SessionConfig, Settings};
 use serde_json as json;
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
     fmt::{self, Debug},
     fs,
     ops::{Deref, DerefMut},
@@ -139,7 +140,7 @@ impl ServerSessionManager {
         &self.session_config
     }
 
-    pub fn session_mut(&mut self) -> SessionLock {
+    pub fn session_mut(&mut self) -> SessionLock<'_> {
         SessionLock {
             session_desc: &mut self.session_config,
             session_path: self.session_path.as_deref(),
@@ -152,7 +153,7 @@ impl ServerSessionManager {
     }
 
     // Note: "value" can be any session subtree, in json format.
-    pub fn set_values(&mut self, descs: Vec<PathValuePair>) -> Result<()> {
+    pub fn set_session_values(&mut self, descs: Vec<PathValuePair>) -> Result<()> {
         let mut session_json = serde_json::to_value(self.session_config.clone()).unwrap();
 
         for desc in descs {
@@ -195,14 +196,14 @@ impl ServerSessionManager {
         &self.session_config.client_connections
     }
 
-    pub fn update_client_list(&mut self, hostname: String, action: ClientListAction) {
+    pub fn update_client_connections(&mut self, hostname: String, action: ClientConnectionsAction) {
         let mut client_connections = self.session_config.client_connections.clone();
 
         let maybe_client_entry = client_connections.entry(hostname);
 
         let mut updated = false;
         match action {
-            ClientListAction::AddIfMissing {
+            ClientConnectionsAction::AddIfMissing {
                 trusted,
                 manual_ips,
             } => {
@@ -219,50 +220,50 @@ impl ServerSessionManager {
                     updated = true;
                 }
             }
-            ClientListAction::SetDisplayName(name) => {
+            ClientConnectionsAction::SetDisplayName(name) => {
                 if let Entry::Occupied(mut entry) = maybe_client_entry {
                     entry.get_mut().display_name = name;
 
                     updated = true;
                 }
             }
-            ClientListAction::Trust => {
+            ClientConnectionsAction::Trust => {
                 if let Entry::Occupied(mut entry) = maybe_client_entry {
                     entry.get_mut().trusted = true;
 
                     updated = true;
                 }
             }
-            ClientListAction::SetManualIps(ips) => {
+            ClientConnectionsAction::SetManualIps(ips) => {
                 if let Entry::Occupied(mut entry) = maybe_client_entry {
                     entry.get_mut().manual_ips = ips.into_iter().collect();
 
                     updated = true;
                 }
             }
-            ClientListAction::RemoveEntry => {
+            ClientConnectionsAction::RemoveEntry => {
                 if let Entry::Occupied(entry) = maybe_client_entry {
                     entry.remove_entry();
 
                     updated = true;
                 }
             }
-            ClientListAction::UpdateCurrentIp(current_ip) => {
-                if let Entry::Occupied(mut entry) = maybe_client_entry {
-                    if entry.get().current_ip != current_ip {
-                        entry.get_mut().current_ip = current_ip;
+            ClientConnectionsAction::UpdateCurrentIp(current_ip) => {
+                if let Entry::Occupied(mut entry) = maybe_client_entry
+                    && entry.get().current_ip != current_ip
+                {
+                    entry.get_mut().current_ip = current_ip;
 
-                        updated = true;
-                    }
+                    updated = true;
                 }
             }
-            ClientListAction::SetConnectionState(state) => {
-                if let Entry::Occupied(mut entry) = maybe_client_entry {
-                    if entry.get().connection_state != state {
-                        entry.get_mut().connection_state = state;
+            ClientConnectionsAction::SetConnectionState(state) => {
+                if let Entry::Occupied(mut entry) = maybe_client_entry
+                    && entry.get().connection_state != state
+                {
+                    entry.get_mut().connection_state = state;
 
-                        updated = true;
-                    }
+                    updated = true;
                 }
             }
         }
@@ -290,44 +291,20 @@ impl ServerSessionManager {
         let connections = self.client_list().clone();
         for (hostname, connection) in connections {
             if connection.trusted {
-                self.update_client_list(
+                self.update_client_connections(
                     hostname,
-                    ClientListAction::SetConnectionState(ConnectionState::Disconnected),
+                    ClientConnectionsAction::SetConnectionState(ConnectionState::Disconnected),
                 )
             } else {
-                self.update_client_list(hostname, ClientListAction::RemoveEntry);
+                self.update_client_connections(hostname, ClientConnectionsAction::RemoveEntry);
             }
         }
 
         for hostname in self.client_hostnames() {
-            self.update_client_list(hostname.clone(), ClientListAction::UpdateCurrentIp(None));
-        }
-    }
-
-    pub fn get_audio_devices_list(&self) -> Result<AudioDevicesList> {
-        #[cfg(not(target_os = "linux"))]
-        {
-            use cpal::traits::{DeviceTrait, HostTrait};
-
-            let host = cpal::default_host();
-
-            let output = host
-                .output_devices()?
-                .filter_map(|d| d.name().ok())
-                .collect::<Vec<_>>();
-            let input = host
-                .input_devices()?
-                .filter_map(|d| d.name().ok())
-                .collect::<Vec<_>>();
-
-            Ok(AudioDevicesList { output, input })
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Ok(AudioDevicesList {
-                input: vec![],
-                output: vec![],
-            })
+            self.update_client_connections(
+                hostname.clone(),
+                ClientConnectionsAction::UpdateCurrentIp(None),
+            );
         }
     }
 }

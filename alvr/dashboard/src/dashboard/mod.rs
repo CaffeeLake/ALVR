@@ -3,14 +3,46 @@ mod components;
 use self::components::{
     DevicesTab, LogsTab, NotificationBar, SettingsTab, SetupWizard, SetupWizardRequest,
 };
-use crate::{dashboard::components::StatisticsTab, DataSources};
-use alvr_common::parking_lot::{Condvar, Mutex};
+use crate::{
+    DataSources,
+    dashboard::components::{CloseAction, NewVersionPopup, StatisticsTab},
+};
+use alvr_common::{
+    LogEntry,
+    parking_lot::{Condvar, Mutex},
+};
 use alvr_events::EventType;
 use alvr_gui_common::theme;
-use alvr_packets::{PathValuePair, ServerRequest};
+use alvr_packets::{ClientConnectionsAction, PathValuePair};
 use alvr_session::SessionConfig;
-use eframe::egui::{self, Align, CentralPanel, Frame, Layout, Margin, RichText, SidePanel, Stroke};
-use std::{collections::BTreeMap, sync::Arc};
+use eframe::egui::{
+    self, Align, CentralPanel, Direction, Frame, Layout, Margin, Panel, RichText, Ui,
+};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum ServerRequest {
+    Log(LogEntry),
+    GetSession,
+    UpdateSession(Box<SessionConfig>),
+    SetSessionValues(Vec<PathValuePair>),
+    UpdateClientList {
+        hostname: String,
+        action: ClientConnectionsAction,
+    },
+    CaptureFrame,
+    InsertIdr,
+    StartRecording,
+    StopRecording,
+    AddFirewallRules,
+    RemoveFirewallRules,
+    GetDriverList,
+    RegisterAlvrDriver,
+    UnregisterDriver(PathBuf),
+    RestartSteamvr,
+    ShutdownSteamvr,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Tab {
@@ -39,6 +71,7 @@ pub struct Dashboard {
     logs_tab: LogsTab,
     notification_bar: NotificationBar,
     setup_wizard: SetupWizard,
+    new_version_popup: Option<components::NewVersionPopup>,
     setup_wizard_open: bool,
     session: Option<SessionConfig>,
 }
@@ -47,9 +80,7 @@ impl Dashboard {
     pub fn new(creation_context: &eframe::CreationContext<'_>, data_sources: DataSources) -> Self {
         alvr_gui_common::theme::set_theme(&creation_context.egui_ctx);
 
-        // Audio devices need to be queried early to mitigate buggy/slow hardware queries on Linux.
         data_sources.request(ServerRequest::GetSession);
-        data_sources.request(ServerRequest::GetAudioDevices);
 
         Self {
             data_sources,
@@ -60,7 +91,7 @@ impl Dashboard {
             tab_labels: [
                 (Tab::Devices, "🔌  Devices"),
                 (Tab::Statistics, "📈  Statistics"),
-                (Tab::Settings, "⚙  Settings"),
+                (Tab::Settings, "🔧  Settings"),
                 #[cfg(not(target_arch = "wasm32"))]
                 (Tab::Installation, "💾  Installation"),
                 (Tab::Logs, "📝  Logs"),
@@ -79,6 +110,7 @@ impl Dashboard {
             setup_wizard: SetupWizard::new(),
             setup_wizard_open: false,
             session: None,
+            new_version_popup: None,
         }
     }
 
@@ -110,7 +142,7 @@ impl Dashboard {
 }
 
 impl eframe::App for Dashboard {
-    fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
         let mut requests = vec![];
 
         let connected_to_server = self.data_sources.server_connected();
@@ -147,18 +179,23 @@ impl eframe::App for Dashboard {
                     self.session = Some(*session);
                 }
                 EventType::ServerRequestsSelfRestart => self.restart_steamvr(&mut requests),
-                EventType::AudioDevices(list) => self.settings_tab.update_audio_devices(list),
                 #[cfg(not(target_arch = "wasm32"))]
                 EventType::DriversList(list) => self.installation_tab.update_drivers(list),
                 EventType::Adb(adb_event) => self
                     .connections_tab
                     .update_adb_download_progress(adb_event.download_progress),
-                _ => (),
+                EventType::NewVersionFound { version, message } => {
+                    self.new_version_popup = Some(NewVersionPopup::new(version, message));
+                }
+                EventType::DebugGroup { .. }
+                | EventType::Tracking(_)
+                | EventType::Buttons(_)
+                | EventType::Haptics(_) => (),
             }
         }
 
         if *self.server_restarting.lock() {
-            CentralPanel::default().show(context, |ui| {
+            CentralPanel::default().show_inside(ui, |ui| {
                 // todo: find a way to center both vertically and horizontally
                 ui.vertical_centered(|ui| {
                     ui.add_space(100.0);
@@ -169,10 +206,10 @@ impl eframe::App for Dashboard {
             return;
         }
 
-        self.notification_bar.ui(context);
+        self.notification_bar.ui(ui);
 
         if self.setup_wizard_open {
-            CentralPanel::default().show(context, |ui| {
+            CentralPanel::default().show_inside(ui, |ui| {
                 if let Some(request) = self.setup_wizard.ui(ui) {
                     match request {
                         SetupWizardRequest::ServerRequest(request) => {
@@ -180,12 +217,14 @@ impl eframe::App for Dashboard {
                         }
                         SetupWizardRequest::Close { finished } => {
                             if finished {
-                                requests.push(ServerRequest::SetValues(vec![PathValuePair {
-                                    path: alvr_packets::parse_path(
-                                        "session_settings.extra.open_setup_wizard",
-                                    ),
-                                    value: serde_json::Value::Bool(false),
-                                }]))
+                                requests.push(ServerRequest::SetSessionValues(vec![
+                                    PathValuePair {
+                                        path: alvr_packets::parse_path(
+                                            "session_settings.extra.open_setup_wizard",
+                                        ),
+                                        value: serde_json::Value::Bool(false),
+                                    },
+                                ]))
                             }
 
                             self.setup_wizard_open = false;
@@ -194,16 +233,15 @@ impl eframe::App for Dashboard {
                 }
             });
         } else {
-            SidePanel::left("side_panel")
+            Panel::left("side_panel")
                 .resizable(false)
                 .frame(
                     Frame::new()
                         .fill(theme::LIGHTER_BG)
-                        .inner_margin(Margin::same(7))
-                        .stroke(Stroke::new(1.0, theme::SEPARATOR_BG)),
+                        .inner_margin(Margin::same(7)),
                 )
-                .exact_width(160.0)
-                .show(context, |ui| {
+                .exact_size(160.0)
+                .show_inside(ui, |ui| {
                     ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
                         ui.add_space(13.0);
                         ui.heading(RichText::new("ALVR").size(25.0).strong());
@@ -231,22 +269,22 @@ impl eframe::App for Dashboard {
                             }
 
                             ui.horizontal(|ui| {
-                                ui.add_space(5.0);
+                                ui.add_space(4.0);
                                 ui.label(RichText::new("SteamVR:").size(13.0));
                                 ui.add_space(-10.0);
-                                if connected_to_server {
-                                    ui.label(
-                                        RichText::new("Connected")
-                                            .color(theme::OK_GREEN)
+                                ui.with_layout(
+                                    Layout::centered_and_justified(Direction::LeftToRight),
+                                    |ui| {
+                                        ui.label(
+                                            if connected_to_server {
+                                                RichText::new("Connected").color(theme::OK_GREEN)
+                                            } else {
+                                                RichText::new("Disconnected").color(theme::KO_RED)
+                                            }
                                             .size(13.0),
-                                    );
-                                } else {
-                                    ui.label(
-                                        RichText::new("Disconnected")
-                                            .color(theme::KO_RED)
-                                            .size(13.0),
-                                    );
-                                }
+                                        )
+                                    },
+                                );
                             })
                         },
                     )
@@ -254,7 +292,7 @@ impl eframe::App for Dashboard {
 
             CentralPanel::default()
                 .frame(Frame::new().inner_margin(Margin::same(20)).fill(theme::BG))
-                .show(context, |ui| {
+                .show_inside(ui, |ui| {
                     ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
                         ui.heading(RichText::new(self.tab_labels[&self.selected_tab]).size(25.0));
                         match self.selected_tab {
@@ -296,11 +334,29 @@ impl eframe::App for Dashboard {
                 });
         }
 
+        let shutdown_alvr = || {
+            self.data_sources.request(ServerRequest::ShutdownSteamvr);
+
+            crate::steamvr_launcher::LAUNCHER
+                .lock()
+                .ensure_steamvr_shutdown();
+        };
+
+        if let Some(popup) = &self.new_version_popup
+            && let Some(action) = popup.ui(ui, shutdown_alvr)
+        {
+            if let CloseAction::CloseWithRequest(request) = action {
+                requests.push(request);
+            }
+
+            self.new_version_popup = None;
+        }
+
         for request in requests {
             self.data_sources.request(request);
         }
 
-        if context.input(|state| state.viewport().close_requested())
+        if ui.input(|state| state.viewport().close_requested())
             && self.session.as_ref().is_some_and(|s| {
                 s.to_settings()
                     .extra
@@ -308,11 +364,7 @@ impl eframe::App for Dashboard {
                     .open_close_steamvr_with_dashboard
             })
         {
-            self.data_sources.request(ServerRequest::ShutdownSteamvr);
-
-            crate::steamvr_launcher::LAUNCHER
-                .lock()
-                .ensure_steamvr_shutdown()
+            shutdown_alvr();
         }
     }
 }

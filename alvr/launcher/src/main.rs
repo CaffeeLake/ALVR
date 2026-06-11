@@ -30,14 +30,18 @@ pub struct ReleaseInfo {
 }
 
 pub enum UiMessage {
-    InstallServer(ReleaseInfo),
+    InstallServer {
+        release_info: ReleaseInfo,
+        session_version: Option<String>,
+    },
     InstallClient(ReleaseInfo),
     Quit,
 }
 
 pub struct InstallationInfo {
-    pub version: String,
+    version: String,
     is_apk_downloaded: bool,
+    has_session_json: bool, // Only relevant on Windows
 }
 
 fn main() {
@@ -58,7 +62,7 @@ fn main() {
         .map(|vendor| vendor.trim() == "Valve")
         .unwrap_or(false)
     {
-        env::set_var("WINIT_X11_SCALE_FACTOR", "1");
+        unsafe { env::set_var("WINIT_X11_SCALE_FACTOR", "1") };
     }
 
     eframe::run_native(

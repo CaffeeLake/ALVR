@@ -72,7 +72,7 @@ impl LogsTab {
         }
     }
 
-    pub fn ui(&self, ui: &mut Ui) {
+    pub fn ui(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if ui.button("Copy all").clicked() {
                 ui.output_mut(|out| {
@@ -90,13 +90,13 @@ impl LogsTab {
             }
             if ui.button("Open logs directory").clicked() {
                 let log_dir = crate::get_filesystem_layout().log_dir;
-                ui.output_mut(|out| {
-                    out.commands
-                        .push(OutputCommand::OpenUrl(OpenUrl::same_tab(format!(
-                            "file://{}",
-                            log_dir.to_string_lossy()
-                        ))));
-                });
+                ui.ctx().open_url(OpenUrl::same_tab(format!(
+                    "file://{}",
+                    log_dir.to_string_lossy()
+                )));
+            }
+            if ui.button("Clear all").clicked() {
+                self.entries.clear();
             }
         });
 

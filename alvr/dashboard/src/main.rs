@@ -8,6 +8,9 @@ mod data_sources;
 #[cfg(target_arch = "wasm32")]
 mod data_sources_wasm;
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "linux")]
+mod linux_checks;
+#[cfg(not(target_arch = "wasm32"))]
 mod logging_backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod steamvr_launcher;
@@ -27,68 +30,47 @@ fn get_filesystem_layout() -> afs::Layout {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     use alvr_common::ALVR_VERSION;
+    use alvr_common::info;
     use alvr_filesystem as afs;
     use eframe::{
-        egui::{IconData, ViewportBuilder},
         NativeOptions,
+        egui::{IconData, ViewportBuilder},
     };
     use ico::IconDir;
     use std::{env, ffi::OsStr, fs};
     use std::{io::Cursor, sync::mpsc};
 
-    // Kill any other dashboard instance
-    let self_path = std::env::current_exe().unwrap();
-    for proc in sysinfo::System::new_all().processes_by_name(OsStr::new(&afs::dashboard_fname())) {
-        if let Some(other_path) = proc.exe() {
-            if other_path != self_path {
-                proc.kill();
-            }
-        }
-    }
-
     let (server_events_sender, server_events_receiver) = mpsc::channel();
     logging_backend::init_logging(server_events_sender.clone());
 
+    // Kill any other dashboard instance
+    let self_path = std::env::current_exe().unwrap().canonicalize().unwrap();
+    for proc in sysinfo::System::new_all().processes_by_name(OsStr::new(&afs::dashboard_fname())) {
+        // According to implementation notes, on linux the returned path can be empty due to
+        // privileges, so canonicalize can fail
+        if let Some(other_path) = proc.exe().and_then(|path| path.canonicalize().ok())
+            && other_path != self_path
+        {
+            info!(
+                "Killing other dashboard process with path {}",
+                other_path.display()
+            );
+            proc.kill();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    linux_checks::audio_check();
+
+    data_sources::clean_session();
+
+    if data_sources::get_read_only_local_session()
+        .settings()
+        .extra
+        .steamvr_launcher
+        .open_close_steamvr_with_dashboard
     {
-        let mut session_manager = data_sources::get_local_session_source();
-
-        session_manager.clean_client_list();
-
-        #[cfg(target_os = "linux")]
-        {
-            let has_nvidia = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::VULKAN,
-                ..Default::default()
-            })
-            .enumerate_adapters(wgpu::Backends::VULKAN)
-            .iter()
-            .any(|adapter| adapter.get_info().vendor == 0x10de);
-
-            if has_nvidia {
-                session_manager
-                    .session_mut()
-                    .session_settings
-                    .extra
-                    .patches
-                    .linux_async_reprojection = false;
-            }
-        }
-
-        if session_manager.session().server_version != *ALVR_VERSION {
-            let mut session_ref = session_manager.session_mut();
-            session_ref.server_version = ALVR_VERSION.clone();
-            session_ref.client_connections.clear();
-            session_ref.session_settings.extra.open_setup_wizard = true;
-        }
-
-        if session_manager
-            .settings()
-            .extra
-            .steamvr_launcher
-            .open_close_steamvr_with_dashboard
-        {
-            steamvr_launcher::LAUNCHER.lock().launch_steamvr()
-        }
+        steamvr_launcher::LAUNCHER.lock().launch_steamvr()
     }
 
     let ico = IconDir::read(Cursor::new(include_bytes!("../resources/dashboard.ico"))).unwrap();
@@ -99,7 +81,7 @@ fn main() {
         .map(|vendor| vendor.trim() == "Valve")
         .unwrap_or(false)
     {
-        env::set_var("WINIT_X11_SCALE_FACTOR", "1");
+        unsafe { env::set_var("WINIT_X11_SCALE_FACTOR", "1") };
     }
 
     eframe::run_native(

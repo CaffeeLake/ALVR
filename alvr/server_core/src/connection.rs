@@ -1,41 +1,41 @@
 use crate::{
+    ConnectionContext, FILESYSTEM_LAYOUT, SESSION_MANAGER, ServerCoreEvent,
     bitrate::BitrateManager,
     hand_gestures::HandGestureManager,
     input_mapping::ButtonMappingManager,
     sockets::WelcomeSocket,
     statistics::StatisticsManager,
     tracking::{self, TrackingManager},
-    ConnectionContext, ServerCoreEvent, ViewsConfig, FILESYSTEM_LAYOUT, SESSION_MANAGER,
 };
 use alvr_adb::{WiredConnection, WiredConnectionStatus};
 use alvr_common::{
-    con_bail, dbg_connection, debug, error,
-    glam::{Quat, UVec2, Vec2, Vec3},
+    AnyhowToCon, BUTTON_INFO, CONTROLLER_PROFILE_INFO, ConResult, ConnectionError, ConnectionState,
+    LifecycleState, QUEST_CONTROLLER_PROFILE_PATH, con_bail, dbg_connection, debug, error,
+    glam::{UVec2, Vec2},
     info,
     parking_lot::{Condvar, Mutex, RwLock},
     settings_schema::Switch,
-    warn, AnyhowToCon, ConResult, ConnectionError, ConnectionState, LifecycleState, Pose,
-    BUTTON_INFO, CONTROLLER_PROFILE_INFO, QUEST_CONTROLLER_PROFILE_PATH,
+    warn,
 };
 use alvr_events::{AdbEvent, ButtonEvent, EventType};
 use alvr_packets::{
-    ClientConnectionResult, ClientControlPacket, ClientListAction, ClientStatistics,
-    NegotiatedStreamingConfig, RealTimeConfig, ReservedClientControlPacket, ServerControlPacket,
-    Tracking, VideoPacketHeader, AUDIO, HAPTICS, STATISTICS, TRACKING, VIDEO,
+    AUDIO, ClientConnectionResult, ClientConnectionsAction, ClientControlPacket, ClientStatistics,
+    HAPTICS, NegotiatedStreamingConfig, NegotiatedStreamingConfigExt, RealTimeConfig, STATISTICS,
+    ServerControlPacket, StreamConfigPacket, TRACKING, TrackingData, VIDEO, VideoPacketHeader,
 };
 use alvr_session::{
-    BodyTrackingBDConfig, BodyTrackingSinkConfig, CodecType, ControllersEmulationMode, FrameSize,
-    H264Profile, OpenvrConfig, SessionConfig, SocketProtocol,
+    BodyTrackingSinkConfig, CodecType, ControllersEmulationMode, FrameSize, H264Profile,
+    OpenvrConfig, SessionConfig, SocketProtocol,
 };
 use alvr_sockets::{
-    PeerType, ProtoControlSocket, StreamSocketBuilder, CONTROL_PORT, KEEPALIVE_INTERVAL,
-    KEEPALIVE_TIMEOUT, WIRED_CLIENT_HOSTNAME,
+    CONTROL_PORT, KEEPALIVE_INTERVAL, KEEPALIVE_TIMEOUT, PeerType, ProtoControlSocket,
+    StreamSocketBuilder, WIRED_CLIENT_HOSTNAME,
 };
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     process::Command,
-    sync::{mpsc::RecvTimeoutError, Arc},
+    sync::{Arc, mpsc::RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
@@ -71,7 +71,7 @@ pub fn contruct_openvr_config(session: &SessionConfig) -> OpenvrConfig {
     let mut controller_is_tracker = false;
     let mut controller_profile = 0;
     let mut use_separate_hand_trackers = false;
-    let controllers_enabled = if let Switch::Enabled(config) = settings.headset.controllers {
+    let controllers_enabled = if let Switch::Enabled(config) = &settings.headset.controllers {
         controller_is_tracker =
             matches!(config.emulation_mode, ControllersEmulationMode::ViveTracker);
         // These numbers don't mean anything, they're just for triggering SteamVR resets.
@@ -79,13 +79,15 @@ pub fn contruct_openvr_config(session: &SessionConfig) -> OpenvrConfig {
         // a bit easier though.
         controller_profile = match config.emulation_mode {
             ControllersEmulationMode::RiftSTouch => 0,
-            ControllersEmulationMode::Quest2Touch => 1,
-            ControllersEmulationMode::Quest3Plus => 2,
-            ControllersEmulationMode::QuestPro => 3,
+            ControllersEmulationMode::Quest1Touch => 1,
+            ControllersEmulationMode::Quest2Touch => 2,
+            ControllersEmulationMode::Quest3Plus => 3,
+            ControllersEmulationMode::QuestPro => 4,
             ControllersEmulationMode::Pico4 => 10,
             ControllersEmulationMode::ValveIndex => 20,
             ControllersEmulationMode::ViveWand => 40,
             ControllersEmulationMode::ViveTracker => 41,
+            ControllersEmulationMode::PSVR2Sense => 60,
             ControllersEmulationMode::Custom { .. } => 500,
         };
         use_separate_hand_trackers = config
@@ -101,6 +103,8 @@ pub fn contruct_openvr_config(session: &SessionConfig) -> OpenvrConfig {
     let body_tracking_vive_enabled =
         if let Switch::Enabled(config) = &settings.headset.body_tracking {
             matches!(config.sink, BodyTrackingSinkConfig::FakeViveTracker)
+        } else if let Switch::Enabled(config) = settings.headset.multimodal_tracking {
+            config.detached_controllers_steamvr_sink
         } else {
             false
         };
@@ -110,16 +114,7 @@ pub fn contruct_openvr_config(session: &SessionConfig) -> OpenvrConfig {
         .headset
         .body_tracking
         .as_option()
-        .and_then(|c| c.sources.body_tracking_fb.as_option().cloned())
-        .map(|c| c.full_body)
-        .or_else(|| {
-            settings.headset.body_tracking.as_option().map(|c| {
-                matches!(
-                    c.sources.body_tracking_bd.as_option(),
-                    Some(BodyTrackingBDConfig::BodyTracking { .. })
-                )
-            })
-        })
+        .map(|c| c.sources.meta.prefer_full_body)
         .unwrap_or(false);
 
     let mut foveation_center_size_x = 0.0;
@@ -160,6 +155,7 @@ pub fn contruct_openvr_config(session: &SessionConfig) -> OpenvrConfig {
 
     let nvenc_overrides = settings.video.encoder_config.nvenc;
     let amf_controls = settings.video.encoder_config.amf;
+    let hdr_controls = settings.video.encoder_config.hdr;
 
     OpenvrConfig {
         tracking_ref_only: settings.headset.tracking_ref_only,
@@ -171,16 +167,16 @@ pub fn contruct_openvr_config(session: &SessionConfig) -> OpenvrConfig {
         rate_control_mode: settings.video.encoder_config.rate_control_mode as u32,
         filler_data: settings.video.encoder_config.filler_data,
         entropy_coding: settings.video.encoder_config.entropy_coding as u32,
-        force_hdr_srgb_correction: settings.video.encoder_config.force_hdr_srgb_correction,
-        clamp_hdr_extended_range: settings.video.encoder_config.clamp_hdr_extended_range,
-        enable_pre_analysis: amf_controls.enable_pre_analysis,
-        enable_vbaq: amf_controls.enable_vbaq,
-        enable_hmqb: amf_controls.enable_hmqb,
-        use_preproc: amf_controls.use_preproc,
-        preproc_sigma: amf_controls.preproc_sigma,
-        preproc_tor: amf_controls.preproc_tor,
+        force_hdr_srgb_correction: hdr_controls.force_hdr_srgb_correction,
+        clamp_hdr_extended_range: hdr_controls.clamp_hdr_extended_range,
+        enable_amf_pre_analysis: amf_controls.enable_pre_analysis,
+        enable_vbaq: settings.video.encoder_config.enable_vbaq,
+        enable_amf_hmqb: amf_controls.enable_hmqb,
+        use_amf_preproc: amf_controls.use_preproc,
+        amf_preproc_sigma: amf_controls.preproc_sigma,
+        amf_preproc_tor: amf_controls.preproc_tor,
         nvenc_quality_preset: nvenc_overrides.quality_preset as u32,
-        amd_encoder_quality_preset: amf_controls.quality_preset as u32,
+        encoder_quality_preset: settings.video.encoder_config.quality_preset as u32,
         force_sw_encoding: settings
             .video
             .encoder_config
@@ -303,7 +299,7 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                 let connection = &session_manager_lock.settings().connection;
                 stream_port = connection.stream_port;
                 client_type = connection.wired_client_type.clone();
-                client_autolaunch = connection.wired_client_autolaunch;
+                client_autolaunch = connection.wired_client_autolaunch.as_option().cloned();
             }
 
             let status = match wired_connection.setup(
@@ -404,17 +400,19 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                 let trusted = {
                     let mut session_manager = SESSION_MANAGER.write();
 
-                    session_manager.update_client_list(
+                    session_manager.update_client_connections(
                         client_hostname.clone(),
-                        ClientListAction::AddIfMissing {
+                        ClientConnectionsAction::AddIfMissing {
                             trusted: false,
                             manual_ips: vec![],
                         },
                     );
 
                     if config.auto_trust_clients {
-                        session_manager
-                            .update_client_list(client_hostname.clone(), ClientListAction::Trust);
+                        session_manager.update_client_connections(
+                            client_hostname.clone(),
+                            ClientConnectionsAction::Trust,
+                        );
                     }
 
                     session_manager
@@ -430,14 +428,13 @@ pub fn handshake_loop(ctx: Arc<ConnectionContext>, lifecycle_state: Arc<RwLock<L
                         .client_list()
                         .get(&client_hostname)
                         .is_some_and(|c| c.connection_state == ConnectionState::Disconnected)
-                {
-                    if let Err(e) = try_connect(
+                    && let Err(e) = try_connect(
                         Arc::clone(&ctx),
                         Arc::clone(&lifecycle_state),
                         [(client_ip, client_hostname.clone())].into_iter().collect(),
-                    ) {
-                        error!("Could not initiate connection for {client_hostname}: {e}");
-                    }
+                    )
+                {
+                    error!("Could not initiate connection for {client_hostname}: {e}");
                 }
 
                 thread::sleep(RETRY_CONNECT_MIN_INTERVAL);
@@ -493,13 +490,13 @@ fn try_connect(
             let action = if clients_to_be_removed.contains(&client_hostname) {
                 clients_to_be_removed.remove(&client_hostname);
 
-                ClientListAction::RemoveEntry
+                ClientConnectionsAction::RemoveEntry
             } else {
-                ClientListAction::SetConnectionState(ConnectionState::Disconnected)
+                ClientConnectionsAction::SetConnectionState(ConnectionState::Disconnected)
             };
             SESSION_MANAGER
                 .write()
-                .update_client_list(client_hostname, action);
+                .update_client_connections(client_hostname, action);
         }
     }));
 
@@ -521,13 +518,13 @@ fn connection_pipeline(
     let mut session_manager_lock = SESSION_MANAGER.write();
 
     dbg_connection!("connection_pipeline: Setting client state in session");
-    session_manager_lock.update_client_list(
+    session_manager_lock.update_client_connections(
         client_hostname.clone(),
-        ClientListAction::SetConnectionState(ConnectionState::Connecting),
+        ClientConnectionsAction::SetConnectionState(ConnectionState::Connecting),
     );
-    session_manager_lock.update_client_list(
+    session_manager_lock.update_client_connections(
         client_hostname.clone(),
-        ClientListAction::UpdateCurrentIp(Some(client_ip)),
+        ClientConnectionsAction::UpdateCurrentIp(Some(client_ip)),
     );
 
     let disconnect_notif = Arc::new(Condvar::new());
@@ -536,44 +533,39 @@ fn connection_pipeline(
     let connection_result = match proto_socket.recv(HANDSHAKE_ACTION_TIMEOUT) {
         Ok(r) => r,
         Err(ConnectionError::TryAgain(e)) => {
-            debug!("Failed to recive client connection packet. This is normal for USB connection.\n{e}");
+            debug!(
+                "Failed to recive client connection packet. This is normal for USB connection.\n{e}"
+            );
 
             return Ok(());
         }
         Err(e) => return Err(e),
     };
 
-    let maybe_streaming_caps = if let ClientConnectionResult::ConnectionAccepted {
-        client_protocol_id,
-        display_name,
-        streaming_capabilities,
-        ..
-    } = connection_result
-    {
-        session_manager_lock.update_client_list(
-            client_hostname.clone(),
-            ClientListAction::SetDisplayName(display_name),
-        );
-
-        if client_protocol_id != alvr_common::protocol_id_u64() {
-            warn!(
-                "Trusted client is incompatible! Expected protocol ID: {}, found: {}",
-                alvr_common::protocol_id_u64(),
-                client_protocol_id,
+    let maybe_streaming_caps =
+        if let ClientConnectionResult::ConnectionAccepted(info) = connection_result {
+            session_manager_lock.update_client_connections(
+                client_hostname.clone(),
+                ClientConnectionsAction::SetDisplayName(info.platform_string),
             );
 
+            if info.client_protocol_id != alvr_common::protocol_id_u64() {
+                warn!(
+                    "Trusted client is incompatible! Expected protocol ID: {}, found: {}",
+                    alvr_common::protocol_id_u64(),
+                    info.client_protocol_id,
+                );
+
+                return Ok(());
+            }
+
+            info.streaming_capabilities
+        } else {
+            debug!("Found client in standby. Retrying");
             return Ok(());
-        }
+        };
 
-        streaming_capabilities
-    } else {
-        debug!("Found client in standby. Retrying");
-        return Ok(());
-    };
-
-    let streaming_caps = if let Some(streaming_caps) = maybe_streaming_caps {
-        alvr_packets::decode_video_streaming_capabilities(&streaming_caps).to_con()?
-    } else {
+    let Some(streaming_caps) = maybe_streaming_caps else {
         con_bail!("Only streaming clients are supported for now");
     };
 
@@ -602,12 +594,42 @@ fn connection_pipeline(
         UVec2::new(align32(res.x), align32(res.y))
     }
 
-    let stream_view_resolution = get_view_res(
+    let mut transcoding_view_resolution = get_view_res(
         initial_settings.video.transcoding_view_resolution.clone(),
         streaming_caps.default_view_resolution,
     );
+    if transcoding_view_resolution.x > streaming_caps.max_view_resolution.x
+        || transcoding_view_resolution.y > streaming_caps.max_view_resolution.y
+    {
+        warn!(
+            "Chosen resolution {}x{} exceeds client maximum supported resolution of {}x{}. \
+            Using maximum supported resolution at same aspect ratio.",
+            transcoding_view_resolution.x,
+            transcoding_view_resolution.y,
+            streaming_caps.max_view_resolution.x,
+            streaming_caps.max_view_resolution.y,
+        );
 
-    let target_view_resolution = get_view_res(
+        let transcoding_ratio =
+            transcoding_view_resolution.x as f32 / transcoding_view_resolution.y as f32;
+
+        if transcoding_ratio
+            > streaming_caps.max_view_resolution.x as f32
+                / streaming_caps.max_view_resolution.y as f32
+        {
+            transcoding_view_resolution = UVec2::new(
+                align32(streaming_caps.max_view_resolution.x as f32),
+                align32(streaming_caps.max_view_resolution.x as f32 / transcoding_ratio),
+            );
+        } else {
+            transcoding_view_resolution = UVec2::new(
+                align32(streaming_caps.max_view_resolution.y as f32 * transcoding_ratio),
+                align32(streaming_caps.max_view_resolution.y as f32),
+            );
+        }
+    }
+
+    let emulated_headset_view_resolution = get_view_res(
         initial_settings
             .video
             .emulated_headset_view_resolution
@@ -618,7 +640,7 @@ fn connection_pipeline(
     let fps = {
         let mut best_match = 0_f32;
         let mut min_diff = f32::MAX;
-        for rate in &streaming_caps.supported_refresh_rates {
+        for rate in &streaming_caps.refresh_rates {
             let diff = (*rate - initial_settings.video.preferred_fps).abs();
             if diff < min_diff {
                 best_match = *rate;
@@ -629,7 +651,7 @@ fn connection_pipeline(
     };
 
     if !streaming_caps
-        .supported_refresh_rates
+        .refresh_rates
         .contains(&initial_settings.video.preferred_fps)
     {
         warn!("Chosen refresh rate not supported. Using {fps}Hz");
@@ -637,7 +659,7 @@ fn connection_pipeline(
 
     let enable_foveated_encoding =
         if let Switch::Enabled(config) = &initial_settings.video.foveated_encoding {
-            let enable = streaming_caps.supports_foveated_encoding || config.force_enable;
+            let enable = streaming_caps.foveated_encoding || config.force_enable;
 
             if !enable {
                 warn!("Foveated encoding is not supported by the client.");
@@ -665,50 +687,29 @@ fn connection_pipeline(
         initial_settings.video.encoder_config.h264_profile
     };
 
-    let mut enable_10_bits_encoding = if initial_settings
+    let mut enable_10_bits_encoding = initial_settings
         .video
         .encoder_config
-        .server_overrides_use_10bit
-    {
-        initial_settings.video.encoder_config.use_10bit
-    } else {
-        streaming_caps.prefer_10bit
-    };
+        .use_10bit
+        .unwrap_or(streaming_caps.prefer_10bit);
 
     if enable_10_bits_encoding && !streaming_caps.encoder_10_bits {
         warn!("10 bits encoding is not supported by the client.");
         enable_10_bits_encoding = false
     }
 
-    let use_full_range = if initial_settings
+    let enable_hdr = initial_settings
         .video
         .encoder_config
-        .server_overrides_use_full_range
-    {
-        initial_settings.video.encoder_config.use_full_range
-    } else {
-        streaming_caps.prefer_full_range
-    };
+        .hdr
+        .enable
+        .unwrap_or(streaming_caps.prefer_hdr);
 
-    let enable_hdr = if initial_settings
+    let encoding_gamma = initial_settings
         .video
         .encoder_config
-        .server_overrides_enable_hdr
-    {
-        initial_settings.video.encoder_config.enable_hdr
-    } else {
-        streaming_caps.prefer_hdr
-    };
-
-    let encoding_gamma = if initial_settings
-        .video
-        .encoder_config
-        .server_overrides_encoding_gamma
-    {
-        initial_settings.video.encoder_config.encoding_gamma
-    } else {
-        streaming_caps.preferred_encoding_gamma
-    };
+        .encoding_gamma
+        .unwrap_or(streaming_caps.preferred_encoding_gamma);
 
     let codec = if initial_settings.video.preferred_codec == CodecType::AV1 {
         let codec = if streaming_caps.encoder_av1 {
@@ -726,60 +727,54 @@ fn connection_pipeline(
         initial_settings.video.preferred_codec
     };
 
-    #[cfg_attr(target_os = "linux", allow(unused_variables))]
-    let game_audio_sample_rate = if let Switch::Enabled(game_audio_config) =
-        &initial_settings.audio.game_audio
-    {
-        #[cfg(not(target_os = "linux"))]
-        {
+    #[cfg(not(target_os = "windows"))]
+    let game_audio_sample_rate = 44100;
+
+    #[cfg(target_os = "windows")]
+    let game_audio_sample_rate =
+        if let Switch::Enabled(game_audio_config) = &initial_settings.audio.game_audio {
             let game_audio_device =
-                alvr_audio::AudioDevice::new_output(game_audio_config.device.as_ref()).to_con()?;
-            if let Switch::Enabled(microphone_config) = &initial_settings.audio.microphone {
-                let (sink, source) = alvr_audio::AudioDevice::new_virtual_microphone_pair(
-                    microphone_config.devices.clone(),
-                )
-                .to_con()?;
-                if matches!(
+                alvr_audio::new_output(game_audio_config.device.as_ref()).to_con()?;
+
+            if let Switch::Enabled(microphone_config) = &initial_settings.audio.microphone
+                && matches!(
                     microphone_config.devices,
-                    alvr_session::MicrophoneDevicesConfig::VBCable
-                ) {
-                    // VoiceMeeter and Custom devices may have arbitrary internal routing.
-                    // Therefore, we cannot detect the loopback issue without knowing the routing.
-                    if alvr_audio::is_same_device(&game_audio_device, &sink)
-                        || alvr_audio::is_same_device(&game_audio_device, &source)
-                    {
-                        con_bail!("Game audio and microphone cannot point to the same device!");
-                    }
+                    alvr_session::MicrophoneDevicesConfig::VAC
+                        | alvr_session::MicrophoneDevicesConfig::VBCable
+                )
+            {
+                let (sink, _) =
+                    alvr_audio::new_virtual_microphone_pair(microphone_config.devices.clone())
+                        .to_con()?;
+
+                // VoiceMeeter and Custom devices may have arbitrary internal routing.
+                // Therefore, we cannot detect the loopback issue without knowing the routing.
+                if alvr_audio::is_same_device(&game_audio_device, &sink) {
+                    con_bail!("Game audio and microphone cannot point to the same device!");
                 }
-                // else:
-                // Stream played via VA-CABLE-X will be directly routed to VA-CABLE-X's virtual microphone.
-                // Game audio will loop back to the game microphone if they are set to the same VA-CABLE-X device.
             }
 
-            game_audio_device.input_sample_rate().to_con()?
-        }
-        #[cfg(target_os = "linux")]
-        44100
-    } else {
-        0
-    };
+            alvr_audio::input_sample_rate(&game_audio_device).to_con()?
+        } else {
+            0
+        };
 
     let wired = client_ip.is_loopback();
 
     dbg_connection!("connection_pipeline: send streaming config");
-    let stream_config_packet = alvr_packets::encode_stream_config(
+    let stream_config_packet = StreamConfigPacket::new(
         session_manager_lock.session(),
-        &NegotiatedStreamingConfig {
-            view_resolution: stream_view_resolution,
+        NegotiatedStreamingConfig {
+            view_resolution: transcoding_view_resolution,
             refresh_rate_hint: fps,
             game_audio_sample_rate,
             enable_foveated_encoding,
-            use_multimodal_protocol: streaming_caps.multimodal_protocol,
-            use_full_range,
             encoding_gamma,
             enable_hdr,
             wired,
-        },
+            ext_str: String::new(),
+        }
+        .with_ext(NegotiatedStreamingConfigExt {}),
     )
     .to_con()?;
     proto_socket.send(&stream_config_packet).to_con()?;
@@ -788,15 +783,14 @@ fn connection_pipeline(
         proto_socket.split(STREAMING_RECV_TIMEOUT).to_con()?;
 
     let mut new_openvr_config = contruct_openvr_config(session_manager_lock.session());
-    new_openvr_config.eye_resolution_width = stream_view_resolution.x;
-    new_openvr_config.eye_resolution_height = stream_view_resolution.y;
-    new_openvr_config.target_eye_resolution_width = target_view_resolution.x;
-    new_openvr_config.target_eye_resolution_height = target_view_resolution.y;
+    new_openvr_config.eye_resolution_width = transcoding_view_resolution.x;
+    new_openvr_config.eye_resolution_height = transcoding_view_resolution.y;
+    new_openvr_config.target_eye_resolution_width = emulated_headset_view_resolution.x;
+    new_openvr_config.target_eye_resolution_height = emulated_headset_view_resolution.y;
     new_openvr_config.refresh_rate = fps as _;
     new_openvr_config.enable_foveated_encoding = enable_foveated_encoding;
     new_openvr_config.h264_profile = encoder_profile as _;
     new_openvr_config.use_10bit_encoder = enable_10_bits_encoding;
-    new_openvr_config.use_full_range_encoding = use_full_range;
     new_openvr_config.enable_hdr = enable_hdr;
     new_openvr_config.encoding_gamma = encoding_gamma;
     new_openvr_config.codec = codec as _;
@@ -846,8 +840,7 @@ fn connection_pipeline(
         initial_settings.connection.stream_port,
         stream_protocol,
         initial_settings.connection.dscp,
-        initial_settings.connection.server_send_buffer_bytes,
-        initial_settings.connection.server_recv_buffer_bytes,
+        initial_settings.connection.server_buffer_config,
         initial_settings.connection.packet_size as _,
     )?;
 
@@ -856,7 +849,7 @@ fn connection_pipeline(
     let mut microphone_receiver: alvr_sockets::StreamReceiver<()> =
         stream_socket.subscribe_to_stream(AUDIO, MAX_UNREAD_PACKETS);
     let tracking_receiver =
-        stream_socket.subscribe_to_stream::<Tracking>(TRACKING, MAX_UNREAD_PACKETS);
+        stream_socket.subscribe_to_stream::<TrackingData>(TRACKING, MAX_UNREAD_PACKETS);
     let haptics_sender = stream_socket.request_stream(HAPTICS);
     let mut statics_receiver =
         stream_socket.subscribe_to_stream::<ClientStatistics>(STATISTICS, MAX_UNREAD_PACKETS);
@@ -867,22 +860,27 @@ fn connection_pipeline(
     *ctx.haptics_sender.lock() = Some(haptics_sender);
 
     let video_send_thread = thread::spawn({
+        let ctx = Arc::clone(&ctx);
         let client_hostname = client_hostname.clone();
         move || {
             while is_streaming(&client_hostname) {
-                let VideoPacket { header, payload } =
-                    match video_channel_receiver.recv_timeout(STREAMING_RECV_TIMEOUT) {
-                        Ok(packet) => packet,
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    };
+                let VideoPacket {
+                    mut header,
+                    payload,
+                } = match video_channel_receiver.recv_timeout(STREAMING_RECV_TIMEOUT) {
+                    Ok(packet) => packet,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                };
 
-                let mut buffer = video_sender.get_buffer(&header).unwrap();
-                // todo: make encoder write to socket buffers directly to avoid copy
-                buffer
-                    .get_range_mut(0, payload.len())
-                    .copy_from_slice(&payload);
-                video_sender.send(buffer).ok();
+                ctx.tracking_manager
+                    .read()
+                    .unrecenter_view_params(&mut header.global_view_params);
+
+                // todo: use get_buffer and make encoder write to socket buffers directly to avoid copy
+                video_sender
+                    .send_header_with_payload(&header, &payload)
+                    .ok();
             }
         }
     });
@@ -896,23 +894,10 @@ fn connection_pipeline(
 
         let client_hostname = client_hostname.clone();
         thread::spawn(move || {
+            #[cfg(not(target_os = "linux"))]
             while is_streaming(&client_hostname) {
-                #[cfg(target_os = "linux")]
-                if let Err(e) = alvr_audio::linux::record_audio_blocking_pipewire(
-                    Arc::new({
-                        let client_hostname = client_hostname.clone();
-                        move || is_streaming(&client_hostname)
-                    }),
-                    game_audio_sender.clone(),
-                    2,
-                    game_audio_sample_rate,
-                ) {
-                    error!("Audio record error: {e:?}");
-                }
-
-                #[cfg(not(target_os = "linux"))]
                 {
-                    let device = match alvr_audio::AudioDevice::new_output(config.device.as_ref()) {
+                    let device = match alvr_audio::new_output(config.device.as_ref()) {
                         Ok(data) => data,
                         Err(e) => {
                             warn!("New audio device failed: {e:?}");
@@ -951,7 +936,7 @@ fn connection_pipeline(
                     }
 
                     #[cfg(windows)]
-                    if let Ok(id) = alvr_audio::AudioDevice::new_output(None)
+                    if let Ok(id) = alvr_audio::new_output(None)
                         .and_then(|d| alvr_audio::get_windows_device_id(&d))
                     {
                         let prop = alvr_session::OpenvrProperty {
@@ -972,55 +957,86 @@ fn connection_pipeline(
         thread::spawn(|| ())
     };
 
-    let microphone_thread =
-        if let Switch::Enabled(config) = initial_settings.audio.microphone.clone() {
-            #[cfg(not(target_os = "linux"))]
-            #[allow(unused_variables)]
-            let (sink, source) =
-                alvr_audio::AudioDevice::new_virtual_microphone_pair(config.devices).to_con()?;
+    #[cfg(not(target_os = "linux"))]
+    let microphone_thread = if let Switch::Enabled(config) =
+        initial_settings.audio.microphone.clone()
+    {
+        #[allow(unused_variables)]
+        let (sink, source) = alvr_audio::new_virtual_microphone_pair(config.devices).to_con()?;
 
-            #[cfg(windows)]
-            if let Ok(id) = alvr_audio::get_windows_device_id(&source) {
-                ctx.events_sender
-                    .send(ServerCoreEvent::SetOpenvrProperty {
-                        device_id: *alvr_common::HEAD_ID,
-                        prop: alvr_session::OpenvrProperty {
-                            key: alvr_session::OpenvrPropKey::AudioDefaultRecordingDeviceIdString,
-                            value: id,
-                        },
-                    })
-                    .ok();
-            }
+        #[cfg(windows)]
+        if let Ok(id) = alvr_audio::get_windows_device_id(&source) {
+            ctx.events_sender
+                .send(ServerCoreEvent::SetOpenvrProperty {
+                    device_id: *alvr_common::HEAD_ID,
+                    prop: alvr_session::OpenvrProperty {
+                        key: alvr_session::OpenvrPropKey::AudioDefaultRecordingDeviceIdString,
+                        value: id,
+                    },
+                })
+                .ok();
+        }
 
+        let client_hostname = client_hostname.clone();
+        thread::spawn(move || {
+            alvr_common::show_err(alvr_audio::play_audio_loop(
+                {
+                    let client_hostname = client_hostname.clone();
+                    move || is_streaming(&client_hostname)
+                },
+                &sink,
+                1,
+                streaming_caps.microphone_sample_rate,
+                config.buffering,
+                &mut microphone_receiver,
+            ));
+        })
+    } else {
+        thread::spawn(|| ())
+    };
+
+    #[cfg(target_os = "linux")]
+    let microphone_thread = {
+        use alvr_audio::linux::{self, AudioInfo};
+        let mic = if let Switch::Enabled(config) = initial_settings.audio.microphone.clone() {
+            Some((
+                AudioInfo {
+                    sample_rate: streaming_caps.microphone_sample_rate,
+                    channel_count: 1,
+                },
+                config.buffering,
+            ))
+        } else {
+            None
+        };
+
+        let audio_info = initial_settings
+            .audio
+            .game_audio
+            .enabled()
+            .then_some(AudioInfo {
+                sample_rate: game_audio_sample_rate,
+                channel_count: 2,
+            });
+
+        if mic.is_some() || audio_info.is_some() {
             let client_hostname = client_hostname.clone();
             thread::spawn(move || {
-                #[cfg(not(target_os = "linux"))]
-                alvr_common::show_err(alvr_audio::play_audio_loop(
+                linux::audio_loop(
                     {
                         let client_hostname = client_hostname.clone();
                         move || is_streaming(&client_hostname)
                     },
-                    &sink,
-                    1,
-                    streaming_caps.microphone_sample_rate,
-                    config.buffering,
+                    game_audio_sender,
+                    audio_info,
                     &mut microphone_receiver,
-                ));
-                #[cfg(target_os = "linux")]
-                alvr_common::show_err(alvr_audio::linux::play_microphone_loop_pipewire(
-                    {
-                        let client_hostname = client_hostname.clone();
-                        move || is_streaming(&client_hostname)
-                    },
-                    1,
-                    streaming_caps.microphone_sample_rate,
-                    config.buffering,
-                    &mut microphone_receiver,
-                ));
+                    mic,
+                );
             })
         } else {
             thread::spawn(|| ())
-        };
+        }
+    };
 
     *ctx.tracking_manager.write() =
         TrackingManager::new(initial_settings.connection.statistics_history_size);
@@ -1035,7 +1051,6 @@ fn connection_pipeline(
             tracking::tracking_loop(
                 &ctx,
                 initial_settings,
-                streaming_caps.multimodal_protocol,
                 hand_gesture_manager,
                 tracking_receiver,
                 || is_streaming(&client_hostname),
@@ -1084,6 +1099,7 @@ fn connection_pipeline(
         let control_sender = Arc::clone(&control_sender);
         let client_hostname = client_hostname.clone();
         move || {
+            let mut previous_config = None;
             while is_streaming(&client_hostname) {
                 let config = {
                     let session_manager_lock = SESSION_MANAGER.read();
@@ -1092,8 +1108,14 @@ fn connection_pipeline(
                     RealTimeConfig::from_settings(settings)
                 };
 
-                if let Ok(config) = config.encode() {
-                    control_sender.lock().send(&config).ok();
+                let same_config = previous_config.as_ref().is_some_and(|prev| config == *prev);
+                if !same_config {
+                    previous_config = Some(config.clone());
+
+                    control_sender
+                        .lock()
+                        .send(&ServerControlPacket::RealTimeConfig(config))
+                        .ok();
                 }
 
                 thread::sleep(REAL_TIME_UPDATE_INTERVAL);
@@ -1172,10 +1194,9 @@ fn connection_pipeline(
                         if !initial_settings.headset.tracking_ref_only {
                             let session_manager_lock = SESSION_MANAGER.read();
                             let config = &session_manager_lock.settings().headset;
-                            ctx.tracking_manager.write().recenter(
-                                config.position_recentering_mode,
-                                config.rotation_recentering_mode,
-                            );
+                            ctx.tracking_manager
+                                .write()
+                                .recenter(&config.recentering_mode);
 
                             let area = packet.unwrap_or(Vec2::new(2.0, 2.0));
                             let wh = area.x * area.y;
@@ -1201,28 +1222,9 @@ fn connection_pipeline(
                         }
                         ctx.events_sender.send(ServerCoreEvent::RequestIDR).ok();
                     }
-                    ClientControlPacket::VideoErrorReport => {
-                        // legacy endpoint. todo: remove
-                        if let Some(stats) = &mut *ctx.statistics_manager.write() {
-                            stats.report_packet_loss();
-                        }
-                        ctx.events_sender.send(ServerCoreEvent::RequestIDR).ok();
-                    }
-                    ClientControlPacket::ViewsConfig(config) => {
+                    ClientControlPacket::LocalViewParams(params) => {
                         ctx.events_sender
-                            .send(ServerCoreEvent::ViewsConfig(ViewsConfig {
-                                local_view_transforms: [
-                                    Pose {
-                                        position: Vec3::new(-config.ipd_m / 2., 0., 0.),
-                                        orientation: Quat::IDENTITY,
-                                    },
-                                    Pose {
-                                        position: Vec3::new(config.ipd_m / 2., 0., 0.),
-                                        orientation: Quat::IDENTITY,
-                                    },
-                                ],
-                                fov: config.fov,
-                            }))
+                            .send(ServerCoreEvent::LocalViewParams(params))
                             .ok();
                     }
                     ClientControlPacket::Battery(packet) => {
@@ -1275,23 +1277,20 @@ fn connection_pipeline(
                             }
                         };
                     }
-                    ClientControlPacket::ActiveInteractionProfile { profile_id, .. } => {
+                    ClientControlPacket::ActiveInteractionProfile { input_ids, .. } => {
                         controller_button_mapping_manager = if let Switch::Enabled(config) =
                             &SESSION_MANAGER.read().settings().headset.controllers
                         {
                             if let Some(mappings) = &config.button_mappings {
                                 Some(ButtonMappingManager::new_manual(mappings))
-                            } else if let (Some(profile_info), Some(emulation_mode)) = (
-                                CONTROLLER_PROFILE_INFO.get(&profile_id),
-                                &controllers_emulation_mode,
-                            ) {
-                                Some(ButtonMappingManager::new_automatic(
-                                    &profile_info.button_set,
-                                    emulation_mode,
-                                    &config.button_mapping_config,
-                                ))
                             } else {
-                                None
+                                controllers_emulation_mode.as_ref().map(|emulation_mode| {
+                                    ButtonMappingManager::new_automatic(
+                                        &input_ids,
+                                        emulation_mode,
+                                        &config.button_mapping_config,
+                                    )
+                                })
                             }
                         } else {
                             None
@@ -1300,44 +1299,13 @@ fn connection_pipeline(
                     ClientControlPacket::Log { level, message } => {
                         info!("Client {client_hostname}: [{level:?}] {message}")
                     }
-                    ClientControlPacket::Reserved(json_string) => {
-                        let reserved: ReservedClientControlPacket =
-                            match serde_json::from_str(&json_string) {
-                                Ok(reserved) => reserved,
-                                Err(e) => {
-                                    info!(
-                                    "Failed to parse reserved packet: {e}. Packet: {json_string}"
-                                );
-                                    continue;
-                                }
-                            };
-
-                        match reserved {
-                            ReservedClientControlPacket::CustomInteractionProfile {
-                                input_ids,
-                                ..
-                            } => {
-                                controller_button_mapping_manager = if let Switch::Enabled(config) =
-                                    &SESSION_MANAGER.read().settings().headset.controllers
-                                {
-                                    if let Some(mappings) = &config.button_mappings {
-                                        Some(ButtonMappingManager::new_manual(mappings))
-                                    } else {
-                                        controllers_emulation_mode.as_ref().map(|emulation_mode| {
-                                            ButtonMappingManager::new_automatic(
-                                                &input_ids,
-                                                emulation_mode,
-                                                &config.button_mapping_config,
-                                            )
-                                        })
-                                    }
-                                } else {
-                                    None
-                                };
-                            }
-                        }
+                    ClientControlPacket::KeepAlive | ClientControlPacket::StreamReady => (),
+                    ClientControlPacket::ProximityState(headset_is_worn) => {
+                        ctx.events_sender
+                            .send(ServerCoreEvent::ProximityState(headset_is_worn))
+                            .ok();
                     }
-                    _ => (),
+                    ClientControlPacket::Reserved(_) | ClientControlPacket::ReservedBuffer(_) => (),
                 }
 
                 disconnection_deadline = Instant::now() + KEEPALIVE_TIMEOUT;
@@ -1406,9 +1374,9 @@ fn connection_pipeline(
         crate::create_recording_file(&ctx, session_manager_lock.settings());
     }
 
-    session_manager_lock.update_client_list(
+    session_manager_lock.update_client_connections(
         client_hostname.clone(),
-        ClientListAction::SetConnectionState(ConnectionState::Streaming),
+        ClientConnectionsAction::SetConnectionState(ConnectionState::Streaming),
     );
 
     ctx.events_sender
@@ -1425,9 +1393,9 @@ fn connection_pipeline(
 
     *ctx.video_recording_file.lock() = None;
 
-    session_manager_lock.update_client_list(
+    session_manager_lock.update_client_connections(
         client_hostname,
-        ClientListAction::SetConnectionState(ConnectionState::Disconnecting),
+        ClientConnectionsAction::SetConnectionState(ConnectionState::Disconnecting),
     );
 
     let enable_on_disconnect_script = session_manager_lock

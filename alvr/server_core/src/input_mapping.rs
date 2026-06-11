@@ -11,6 +11,7 @@ pub fn registered_button_set(
 ) -> HashSet<u64> {
     match &controllers_emulation_mode {
         ControllersEmulationMode::RiftSTouch
+        | ControllersEmulationMode::Quest1Touch
         | ControllersEmulationMode::Quest2Touch
         | ControllersEmulationMode::Quest3Plus
         | ControllersEmulationMode::QuestPro => CONTROLLER_PROFILE_INFO
@@ -20,6 +21,11 @@ pub fn registered_button_set(
             .clone(),
         ControllersEmulationMode::Pico4 => CONTROLLER_PROFILE_INFO
             .get(&PICO4_CONTROLLER_PROFILE_ID)
+            .unwrap()
+            .button_set
+            .clone(),
+        ControllersEmulationMode::PSVR2Sense => CONTROLLER_PROFILE_INFO
+            .get(&PSVR2_CONTROLLER_PROFILE_ID)
             .unwrap()
             .button_set
             .clone(),
@@ -148,15 +154,16 @@ fn map_button_pair_automatic(
         if let Some(destination_click) = destination.click {
             targets.push(passthrough(destination_click));
         }
-        if source.touch.is_none() {
-            if let Some(destination_touch) = destination.touch {
-                targets.push(passthrough(destination_touch));
-            }
+        if source.touch.is_none()
+            && let Some(destination_touch) = destination.touch
+        {
+            targets.push(passthrough(destination_touch));
         }
-        if source.value.is_none() {
-            if let Some(destination_value) = destination.value {
-                targets.push(binary_to_scalar(destination_value, click_to_value));
-            }
+
+        if source.value.is_none()
+            && let Some(destination_value) = destination.value
+        {
+            targets.push(binary_to_scalar(destination_value, click_to_value));
         }
 
         entries.push((source_click, targets));
@@ -173,35 +180,36 @@ fn map_button_pair_automatic(
         let mut remap_for_touch = false;
         let mut remap_for_force = false;
 
-        if source.click.is_none() {
-            if let Some(destination_click) = destination.click {
-                targets.push(hysteresis_threshold(
-                    destination_click,
-                    config.click_threshold,
-                ));
-            }
+        if source.click.is_none()
+            && let Some(destination_click) = destination.click
+        {
+            targets.push(hysteresis_threshold(
+                destination_click,
+                config.click_threshold,
+            ));
         }
-        if source.touch.is_none() {
-            if let Some(destination_touch) = destination.touch {
-                targets.push(hysteresis_threshold(
-                    destination_touch,
-                    config.touch_threshold,
-                ));
-                remap_for_touch = true;
-            }
+        if source.touch.is_none()
+            && let Some(destination_touch) = destination.touch
+        {
+            targets.push(hysteresis_threshold(
+                destination_touch,
+                config.touch_threshold,
+            ));
+            remap_for_touch = true;
         }
-        if source.force.is_none() {
-            if let Some(destination_force) = destination.force {
-                targets.push(remap(
-                    destination_force,
-                    Range {
-                        min: config.force_threshold,
-                        max: 1.0,
-                    },
-                ));
-                remap_for_force = true;
-            }
+        if source.force.is_none()
+            && let Some(destination_force) = destination.force
+        {
+            targets.push(remap(
+                destination_force,
+                Range {
+                    min: config.force_threshold,
+                    max: 1.0,
+                },
+            ));
+            remap_for_force = true;
         }
+
         if let Some(destination_value) = destination.value {
             if !remap_for_touch && !remap_for_force {
                 targets.push(passthrough(destination_value));
@@ -255,6 +263,18 @@ pub fn automatic_bindings(
             ));
         }
     }
+    if s_set.contains(&*LEFT_SYSTEM_CLICK_ID) {
+        let click = click(*LEFT_SYSTEM_CLICK_ID);
+        if d_set.contains(&*LEFT_SYSTEM_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                click,
+                ct(s_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_MENU_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(click, click, config));
+        }
+    }
     if s_set.contains(&*RIGHT_MENU_CLICK_ID) {
         let click = click(*RIGHT_MENU_CLICK_ID);
         if d_set.contains(&*RIGHT_MENU_CLICK_ID) {
@@ -265,6 +285,18 @@ pub fn automatic_bindings(
                 ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID),
                 config,
             ));
+        }
+    }
+    if s_set.contains(&*RIGHT_SYSTEM_CLICK_ID) {
+        let click = click(*RIGHT_SYSTEM_CLICK_ID);
+        if d_set.contains(&*RIGHT_SYSTEM_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                click,
+                ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*RIGHT_MENU_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(click, click, config));
         }
     }
 
@@ -355,6 +387,15 @@ pub fn automatic_bindings(
             config,
         ));
     }
+    if s_set.contains(&*LEFT_SQUEEZE_SENSOR_VALUE_ID)
+        && d_set.contains(&*LEFT_SQUEEZE_SENSOR_VALUE_ID)
+    {
+        bindings.extend(map_button_pair_automatic(
+            value(*LEFT_SQUEEZE_SENSOR_VALUE_ID),
+            value(*LEFT_SQUEEZE_SENSOR_VALUE_ID),
+            config,
+        ));
+    }
     if (s_set.contains(&*RIGHT_SQUEEZE_CLICK_ID) || s_set.contains(&*RIGHT_SQUEEZE_VALUE_ID))
         && (d_set.contains(&*RIGHT_SQUEEZE_CLICK_ID) || d_set.contains(&*RIGHT_SQUEEZE_VALUE_ID))
     {
@@ -376,7 +417,15 @@ pub fn automatic_bindings(
             config,
         ));
     }
-
+    if s_set.contains(&*RIGHT_SQUEEZE_SENSOR_VALUE_ID)
+        && d_set.contains(&*RIGHT_SQUEEZE_SENSOR_VALUE_ID)
+    {
+        bindings.extend(map_button_pair_automatic(
+            value(*RIGHT_SQUEEZE_SENSOR_VALUE_ID),
+            value(*RIGHT_SQUEEZE_SENSOR_VALUE_ID),
+            config,
+        ));
+    }
     // Trigger buttons
     if (s_set.contains(&*LEFT_TRIGGER_CLICK_ID) || s_set.contains(&*LEFT_TRIGGER_VALUE_ID))
         && (d_set.contains(&*LEFT_TRIGGER_CLICK_ID) || d_set.contains(&*LEFT_TRIGGER_VALUE_ID))
@@ -394,6 +443,15 @@ pub fn automatic_bindings(
                 *LEFT_TRIGGER_TOUCH_ID,
                 *LEFT_TRIGGER_VALUE_ID,
             ),
+            config,
+        ));
+    }
+    if s_set.contains(&*LEFT_TRIGGER_SENSOR_VALUE_ID)
+        && d_set.contains(&*LEFT_TRIGGER_SENSOR_VALUE_ID)
+    {
+        bindings.extend(map_button_pair_automatic(
+            value(*LEFT_TRIGGER_SENSOR_VALUE_ID),
+            value(*LEFT_TRIGGER_SENSOR_VALUE_ID),
             config,
         ));
     }
@@ -416,7 +474,15 @@ pub fn automatic_bindings(
             config,
         ));
     }
-
+    if s_set.contains(&*RIGHT_TRIGGER_SENSOR_VALUE_ID)
+        && d_set.contains(&*RIGHT_TRIGGER_SENSOR_VALUE_ID)
+    {
+        bindings.extend(map_button_pair_automatic(
+            value(*RIGHT_TRIGGER_SENSOR_VALUE_ID),
+            value(*RIGHT_TRIGGER_SENSOR_VALUE_ID),
+            config,
+        ));
+    }
     // Thumbsticks
     if s_set.contains(&*LEFT_THUMBSTICK_X_ID) {
         let x = value(*LEFT_THUMBSTICK_X_ID);

@@ -1,20 +1,20 @@
 use alvr_client_core::{ClientCapabilities, ClientCoreContext, ClientCoreEvent};
 use alvr_common::{
+    DeviceMotion, HEAD_ID, Pose, RelaxedAtomic, ViewParams,
     glam::{Quat, UVec2, Vec3},
     parking_lot::RwLock,
-    DeviceMotion, Fov, Pose, RelaxedAtomic, HEAD_ID,
 };
-use alvr_packets::{FaceData, ViewParams};
+use alvr_packets::{FaceData, TrackingData};
 use alvr_session::CodecType;
 use eframe::{
-    egui::{CentralPanel, Context, RichText, Slider, ViewportBuilder},
     Frame, NativeOptions,
+    egui::{CentralPanel, RichText, Slider, Ui, ViewportBuilder},
 };
 use std::{
     f32::consts::{FRAC_PI_2, PI},
     sync::{
-        mpsc::{self, TryRecvError},
         Arc,
+        mpsc::{self, TryRecvError},
     },
     thread,
     time::{Duration, Instant},
@@ -90,14 +90,14 @@ impl Window {
 }
 
 impl eframe::App for Window {
-    fn update(&mut self, context: &Context, _: &mut Frame) {
+    fn ui(&mut self, ui: &mut Ui, _: &mut Frame) {
         while let Ok(output) = self.output_receiver.try_recv() {
             self.output = output;
         }
 
         let mut input = self.input.clone();
 
-        CentralPanel::default().show(context, |ui| {
+        CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading(RichText::new(&self.output.hud_message));
             });
@@ -134,7 +134,7 @@ impl eframe::App for Window {
             self.input_sender.send(self.input.clone()).ok();
         }
 
-        context.request_repaint();
+        ui.request_repaint();
     }
 }
 
@@ -145,17 +145,7 @@ fn tracking_thread(
     input: Arc<RwLock<WindowInput>>,
 ) {
     let timestamp_origin = Instant::now();
-
-    let views_params = ViewParams {
-        pose: Pose::default(),
-        fov: Fov {
-            left: -1.0,
-            right: 1.0,
-            up: 1.0,
-            down: -1.0,
-        },
-    };
-    context.send_view_params([views_params, views_params]);
+    context.send_view_params([ViewParams::DUMMY; 2]);
 
     let mut loop_deadline = Instant::now();
     while streaming.value() {
@@ -170,9 +160,9 @@ fn tracking_thread(
 
         let position = Vec3::new(0.0, input_lock.height, 0.0);
 
-        context.send_tracking(
-            timestamp_origin.elapsed(),
-            vec![(
+        context.send_tracking(TrackingData {
+            poll_timestamp: timestamp_origin.elapsed(),
+            device_motions: vec![(
                 *HEAD_ID,
                 DeviceMotion {
                     pose: Pose {
@@ -183,14 +173,11 @@ fn tracking_thread(
                     angular_velocity: Vec3::ZERO,
                 },
             )],
-            [None, None],
-            FaceData {
-                eye_gazes: [None, None],
-                fb_face_expression: None,
-                htc_eye_expression: None,
-                htc_lip_expression: None,
-            },
-        );
+            hand_skeletons: [None, None],
+            face: FaceData::default(),
+            body: None,
+            markers: vec![],
+        });
 
         drop(input_lock);
 
@@ -204,14 +191,15 @@ fn client_thread(
     input_receiver: mpsc::Receiver<WindowInput>,
 ) {
     let capabilities = ClientCapabilities {
+        platform: alvr_system_info::platform(None, None),
         default_view_resolution: UVec2::new(1920, 1832),
+        max_view_resolution: UVec2::new(1920, 1832),
         refresh_rates: vec![60.0, 72.0, 80.0, 90.0, 120.0],
         foveated_encoding: false,
         encoder_high_profile: false,
         encoder_10_bits: false,
         encoder_av1: false,
         prefer_10bit: false,
-        prefer_full_range: true,
         preferred_encoding_gamma: 1.0,
         prefer_hdr: false,
     };

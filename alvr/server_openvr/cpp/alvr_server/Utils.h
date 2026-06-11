@@ -3,18 +3,18 @@
 #include <chrono>
 #ifdef _WIN32
 #pragma warning(disable : 4005)
-#include <WinSock2.h>
+#include <winsock2.h>
 #pragma warning(default : 4005)
-#include <WS2tcpip.h>
-#include <WinInet.h>
-#include <Windows.h>
 #include <d3d11.h>
 #include <delayimp.h>
 #include <stdint.h>
 #include <string>
 #include <vector>
+#include <windows.h>
+#include <wininet.h>
+#include <ws2tcpip.h>
 #define _USE_MATH_DEFINES
-#include <VersionHelpers.h>
+#include <versionhelpers.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -68,6 +68,38 @@ inline vr::HmdQuaternion_t HmdQuaternion_Init(double w, double x, double y, doub
     quat.y = y;
     quat.z = z;
     return quat;
+}
+
+inline vr::HmdRect2_t fov_to_tangents(FfiFov fov) {
+    auto proj_bounds = vr::HmdRect2_t {};
+    proj_bounds.vTopLeft.v[0] = tanf(fov.left);
+    proj_bounds.vBottomRight.v[0] = tanf(fov.right);
+    proj_bounds.vTopLeft.v[1] = tanf(fov.down);
+    proj_bounds.vBottomRight.v[1] = tanf(fov.up);
+
+    return proj_bounds;
+}
+
+inline vr::HmdMatrix34_t pose_to_mat(FfiPose pose) {
+    FfiQuat o = pose.orientation;
+
+    vr::HmdMatrix34_t mat = {};
+
+    mat.m[0][0] = 1.0f - 2.0f * (o.y * o.y + o.z * o.z);
+    mat.m[0][1] = 2.0f * (o.x * o.y - o.w * o.z);
+    mat.m[0][2] = 2.0f * (o.x * o.z + o.w * o.y);
+    mat.m[1][0] = 2.0f * (o.x * o.y + o.w * o.z);
+    mat.m[1][1] = 1.0f - 2.0f * (o.x * o.x + o.z * o.z);
+    mat.m[1][2] = 2.0f * (o.y * o.z - o.w * o.x);
+    mat.m[2][0] = 2.0f * (o.x * o.z - o.w * o.y);
+    mat.m[2][1] = 2.0f * (o.y * o.z + o.w * o.x);
+    mat.m[2][2] = 1.0f - 2.0f * (o.x * o.x + o.y * o.y);
+
+    mat.m[0][3] = pose.position[0];
+    mat.m[1][3] = pose.position[1];
+    mat.m[2][3] = pose.position[2];
+
+    return mat;
 }
 
 inline void HmdMatrix_SetIdentity(vr::HmdMatrix34_t* pMatrix) {

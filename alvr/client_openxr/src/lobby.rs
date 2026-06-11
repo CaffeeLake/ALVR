@@ -1,12 +1,9 @@
 use crate::{
-    from_xr_time,
     graphics::{self, ProjectionLayerAlphaConfig, ProjectionLayerBuilder},
     interaction::{self, InteractionContext},
 };
-use alvr_common::{glam::UVec2, parking_lot::RwLock, Pose};
-use alvr_graphics::{
-    BodyTrackingType, GraphicsContext, LobbyRenderer, LobbyViewParams, SDR_FORMAT_GL,
-};
+use alvr_common::{DeviceMotion, Pose, ViewParams, glam::UVec2, parking_lot::RwLock};
+use alvr_graphics::{GraphicsContext, LobbyRenderer, LobbyViewParams, SDR_FORMAT_GL};
 use alvr_system_info::Platform;
 use openxr as xr;
 use std::{rc::Rc, sync::Arc, time::Duration};
@@ -88,8 +85,8 @@ impl Lobby {
         self.renderer.update_hud_message(message);
     }
 
-    pub fn render(&mut self, vsync_time: Duration) -> ProjectionLayerBuilder {
-        let xr_vsync_time = xr::Time::from_nanos(vsync_time.as_nanos() as _);
+    pub fn render(&mut self, vsync_time: Duration) -> ProjectionLayerBuilder<'_> {
+        let xr_vsync_time = crate::to_xr_time(vsync_time);
 
         let (flags, maybe_views) = self
             .xr_session
@@ -133,51 +130,32 @@ impl Lobby {
             &mut Pose::default(),
         );
 
-        let additional_motions = self
-            .interaction_ctx
-            .read()
-            .body_sources
-            .motion_tracker_bd
-            .as_ref()
-            .map(|tracker| {
-                interaction::get_bd_motion_trackers(from_xr_time(xr_vsync_time), tracker)
-            })
-            .map(|vec| vec.iter().map(|(_, motion)| *motion).collect());
+        let mut additional_motions = vec![];
+        if let Some(source) = &self.interaction_ctx.read().body_source {
+            additional_motions.extend(
+                interaction::get_bd_motion_trackers(source, vsync_time)
+                    .iter()
+                    .map(|(_, motion)| *motion),
+            )
+        }
+        if let Some(context) = &mut self.interaction_ctx.write().marker_spatial_context
+            && let Some(marker_poses) =
+                interaction::get_marker_poses(context, &self.reference_space, vsync_time)
+        {
+            additional_motions.extend(marker_poses.into_iter().map(|(_, pose)| DeviceMotion {
+                pose,
+                ..Default::default()
+            }));
+        }
 
-        let body_skeleton_fb = self
+        let body_skeleton = self
             .interaction_ctx
             .read()
-            .body_sources
-            .body_tracker_fb
+            .body_source
             .as_ref()
-            .and_then(|(tracker, joint_count)| {
-                interaction::get_fb_body_skeleton(
-                    &self.reference_space,
-                    xr_vsync_time,
-                    tracker,
-                    *joint_count,
-                )
+            .and_then(|source| {
+                interaction::get_body_skeleton(source, &self.reference_space, vsync_time)
             });
-
-        let body_skeleton_bd = self
-            .interaction_ctx
-            .read()
-            .body_sources
-            .body_tracker_bd
-            .as_ref()
-            .and_then(|tracker| {
-                interaction::get_bd_body_skeleton(&self.reference_space, xr_vsync_time, tracker)
-            });
-
-        let (body_skeleton, body_tracking_type) = {
-            if body_skeleton_fb.is_some() {
-                (body_skeleton_fb, Some(BodyTrackingType::Meta))
-            } else if body_skeleton_bd.is_some() {
-                (body_skeleton_bd, Some(BodyTrackingType::Pico))
-            } else {
-                (None, None)
-            }
-        };
 
         let left_swapchain_idx = self.swapchains[0].acquire_image().unwrap();
         let right_swapchain_idx = self.swapchains[1].acquire_image().unwrap();
@@ -192,20 +170,23 @@ impl Lobby {
         self.renderer.render(
             [
                 LobbyViewParams {
-                    pose: crate::from_xr_pose(views[0].pose),
-                    fov: crate::from_xr_fov(views[0].fov),
+                    view_params: ViewParams {
+                        pose: crate::from_xr_pose(views[0].pose),
+                        fov: crate::from_xr_fov(views[0].fov),
+                    },
                     swapchain_index: left_swapchain_idx,
                 },
                 LobbyViewParams {
-                    pose: crate::from_xr_pose(views[1].pose),
-                    fov: crate::from_xr_fov(views[1].fov),
+                    view_params: ViewParams {
+                        pose: crate::from_xr_pose(views[1].pose),
+                        fov: crate::from_xr_fov(views[1].fov),
+                    },
                     swapchain_index: right_swapchain_idx,
                 },
             ],
             [left_hand_data, right_hand_data],
-            additional_motions,
             body_skeleton,
-            body_tracking_type,
+            additional_motions,
             false,
             cfg!(debug_assertions),
         );

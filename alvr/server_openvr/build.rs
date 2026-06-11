@@ -1,5 +1,15 @@
 use std::{env, path::PathBuf};
 
+fn get_vulkan_headers_path() -> PathBuf {
+    alvr_filesystem::deps_dir()
+        .join(if cfg!(target_os = "linux") {
+            "linux"
+        } else {
+            "windows"
+        })
+        .join("vulkan-headers/include")
+}
+
 fn get_ffmpeg_path() -> PathBuf {
     let ffmpeg_path = alvr_filesystem::deps_dir()
         .join(if cfg!(target_os = "linux") {
@@ -87,6 +97,11 @@ fn main() {
         let ffmpeg_path = get_ffmpeg_path();
 
         assert!(ffmpeg_path.join("include").exists());
+
+        let vulkan_headers = get_vulkan_headers_path();
+        assert!(vulkan_headers.exists());
+        build.include(vulkan_headers);
+
         build.include(ffmpeg_path.join("include"));
     }
 
@@ -100,6 +115,22 @@ fn main() {
 
     #[cfg(feature = "gpl")]
     build.define("ALVR_GPL", None);
+
+    #[cfg(target_os = "windows")]
+    {
+        let vpl_path = alvr_filesystem::deps_dir().join("windows/libvpl/alvr_build");
+        let vpl_include_path = vpl_path.join("include");
+        let vpl_lib_path = vpl_path.join("lib");
+
+        println!(
+            "cargo:rustc-link-search=native={}",
+            vpl_lib_path.to_string_lossy()
+        );
+
+        build.define("ONEVPL_EXPERIMENTAL", None);
+        build.include(vpl_include_path);
+        println!("cargo:rustc-link-lib=vpl");
+    }
 
     build.compile("bindings");
 
@@ -117,12 +148,14 @@ fn main() {
         assert!(x264_pkg_path.exists());
 
         let x264_pkg_path = x264_pkg_path.to_string_lossy().to_string();
-        env::set_var(
-            "PKG_CONFIG_PATH",
-            env::var("PKG_CONFIG_PATH").map_or(x264_pkg_path.clone(), |old| {
-                format!("{x264_pkg_path}:{old}")
-            }),
-        );
+        unsafe {
+            env::set_var(
+                "PKG_CONFIG_PATH",
+                env::var("PKG_CONFIG_PATH").map_or(x264_pkg_path.clone(), |old| {
+                    format!("{x264_pkg_path}:{old}")
+                }),
+            )
+        };
         println!("cargo:rustc-link-lib=static=x264");
 
         pkg_config::Config::new()
@@ -149,12 +182,14 @@ fn main() {
             assert!(ffmpeg_pkg_path.exists());
 
             let ffmpeg_pkg_path = ffmpeg_pkg_path.to_string_lossy().to_string();
-            env::set_var(
-                "PKG_CONFIG_PATH",
-                env::var("PKG_CONFIG_PATH").map_or(ffmpeg_pkg_path.clone(), |old| {
-                    format!("{ffmpeg_pkg_path}:{old}")
-                }),
-            );
+            unsafe {
+                env::set_var(
+                    "PKG_CONFIG_PATH",
+                    env::var("PKG_CONFIG_PATH").map_or(ffmpeg_pkg_path.clone(), |old| {
+                        format!("{ffmpeg_pkg_path}:{old}")
+                    }),
+                )
+            };
 
             let pkg = pkg_config::Config::new().statik(true).to_owned();
 

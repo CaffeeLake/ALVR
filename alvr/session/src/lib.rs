@@ -4,9 +4,9 @@ pub use settings::*;
 pub use settings_schema;
 
 use alvr_common::{
-    anyhow::{bail, Result},
+    ALVR_VERSION, ConnectionState, ToAny,
+    anyhow::{Result, bail},
     semver::Version,
-    ConnectionState, ToAny, ALVR_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json as json;
@@ -43,18 +43,17 @@ pub struct OpenvrConfig {
     pub h264_profile: u32,
     pub refresh_rate: u32,
     pub use_10bit_encoder: bool,
-    pub use_full_range_encoding: bool,
     pub encoding_gamma: f32,
     pub enable_hdr: bool,
     pub force_hdr_srgb_correction: bool,
     pub clamp_hdr_extended_range: bool,
-    pub enable_pre_analysis: bool,
+    pub enable_amf_pre_analysis: bool,
     pub enable_vbaq: bool,
-    pub enable_hmqb: bool,
-    pub use_preproc: bool,
-    pub preproc_sigma: u32,
-    pub preproc_tor: u32,
-    pub amd_encoder_quality_preset: u32,
+    pub enable_amf_hmqb: bool,
+    pub use_amf_preproc: bool,
+    pub amf_preproc_sigma: u32,
+    pub amf_preproc_tor: u32,
+    pub encoder_quality_preset: u32,
     pub rate_control_mode: u32,
     pub filler_data: bool,
     pub entropy_coding: u32,

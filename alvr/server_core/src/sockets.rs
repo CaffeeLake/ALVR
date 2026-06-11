@@ -1,6 +1,7 @@
 use alvr_common::{
-    anyhow::{bail, Result},
-    warn, ToAny,
+    ToAny,
+    anyhow::{Result, bail},
+    warn,
 };
 use flume::TryRecvError;
 use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent};
@@ -28,7 +29,7 @@ impl WelcomeSocket {
                         let hostname = info
                             .get_property_val_str(alvr_sockets::MDNS_DEVICE_ID_KEY)
                             .unwrap_or_else(|| info.get_hostname());
-                        let address = *info.get_addresses().iter().next().to_any()?;
+                        let address = info.get_addresses().iter().next().to_any()?;
 
                         let client_protocol = info
                             .get_property_val_str(alvr_sockets::MDNS_PROTOCOL_KEY)
@@ -53,7 +54,7 @@ impl WelcomeSocket {
                             warn!("Found incompatible client {hostname}! {reason}\n{protocols}");
                         }
 
-                        clients.insert(hostname.into(), address);
+                        clients.insert(hostname.into(), address.to_ip_addr());
                     }
                 }
                 Err(TryRecvError::Empty) => break,

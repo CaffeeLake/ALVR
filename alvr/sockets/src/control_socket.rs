@@ -1,22 +1,86 @@
-use crate::backend::{tcp, SocketReader, SocketWriter};
-
-use super::CONTROL_PORT;
-use alvr_common::{anyhow::Result, ConResult, HandleTryAgain, ToCon};
-use alvr_session::SocketBufferSize;
-use serde::{de::DeserializeOwned, Serialize};
+use crate::{CONTROL_PORT, LOCAL_IP};
+use alvr_common::{ConResult, HandleTryAgain, ToCon, anyhow::Result, con_bail};
+use alvr_session::{DscpTos, SocketBufferConfig};
+use bincode::config;
+use serde::{Serialize, de::DeserializeOwned};
 use std::{
+    io::{Read, Write},
     marker::PhantomData,
     mem,
-    net::{IpAddr, TcpListener, TcpStream},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     time::{Duration, Instant},
 };
 
 // This corresponds to the length of the payload
 const FRAMED_PREFIX_LENGTH: usize = mem::size_of::<u32>();
 
-struct RecvState {
-    packet_length: usize, // contains length prefix
-    packet_cursor: usize, // counts also the length prefix bytes
+pub fn bind(
+    timeout: Duration,
+    port: u16,
+    dscp: Option<DscpTos>,
+    buffer_config: SocketBufferConfig,
+) -> Result<TcpListener> {
+    let socket = TcpListener::bind((LOCAL_IP, port))?.into();
+
+    crate::set_socket_buffers(&socket, buffer_config).ok();
+
+    crate::set_dscp(&socket, dscp);
+
+    socket.set_read_timeout(Some(timeout))?;
+
+    Ok(socket.into())
+}
+
+pub fn accept_from_server(
+    listener: &TcpListener,
+    server_ip: Option<IpAddr>,
+    timeout: Duration,
+) -> ConResult<(TcpStream, TcpStream)> {
+    // Uses timeout set during bind()
+    let (socket, server_address) = listener.accept().handle_try_again()?;
+
+    if let Some(ip) = server_ip
+        && server_address.ip() != ip
+    {
+        con_bail!(
+            "Connected to wrong client: Expected: {ip}, Found {}",
+            server_address.ip()
+        );
+    }
+
+    socket.set_read_timeout(Some(timeout)).to_con()?;
+    socket.set_nodelay(true).to_con()?;
+
+    Ok((socket.try_clone().to_con()?, socket))
+}
+
+pub fn connect_to_client(
+    timeout: Duration,
+    client_ips: &[IpAddr],
+    port: u16,
+    buffer_config: SocketBufferConfig,
+) -> ConResult<(TcpStream, TcpStream)> {
+    let split_timeout = timeout / client_ips.len() as u32;
+
+    let mut res = alvr_common::try_again();
+    for ip in client_ips {
+        res = TcpStream::connect_timeout(&SocketAddr::new(*ip, port), split_timeout)
+            .handle_try_again();
+
+        if res.is_ok() {
+            break;
+        }
+    }
+    let socket = res?.into();
+
+    crate::set_socket_buffers(&socket, buffer_config).ok();
+    socket.set_read_timeout(Some(timeout)).to_con()?;
+
+    let socket = TcpStream::from(socket);
+
+    socket.set_nodelay(true).to_con()?;
+
+    Ok((socket.try_clone().to_con()?, socket))
 }
 
 fn framed_send<S: Serialize>(
@@ -24,17 +88,13 @@ fn framed_send<S: Serialize>(
     buffer: &mut Vec<u8>,
     packet: &S,
 ) -> Result<()> {
-    let serialized_size = bincode::serialized_size(&packet)? as usize;
-    let packet_size = serialized_size + FRAMED_PREFIX_LENGTH;
+    buffer.resize(FRAMED_PREFIX_LENGTH, 0);
 
-    if buffer.len() < packet_size {
-        buffer.resize(packet_size, 0);
-    }
+    let encoded_size = bincode::serde::encode_into_std_write(packet, buffer, config::standard())?;
 
-    buffer[0..FRAMED_PREFIX_LENGTH].copy_from_slice(&(serialized_size as u32).to_be_bytes());
-    bincode::serialize_into(&mut buffer[FRAMED_PREFIX_LENGTH..packet_size], &packet)?;
+    buffer[0..FRAMED_PREFIX_LENGTH].copy_from_slice(&(encoded_size as u32).to_le_bytes());
 
-    socket.send(&buffer[0..packet_size])?;
+    socket.write_all(buffer)?;
 
     Ok(())
 }
@@ -42,18 +102,18 @@ fn framed_send<S: Serialize>(
 fn framed_recv<R: DeserializeOwned>(
     socket: &mut TcpStream,
     buffer: &mut Vec<u8>,
-    maybe_recv_state: &mut Option<RecvState>,
+    recv_cursor: &mut Option<usize>,
     timeout: Duration,
 ) -> ConResult<R> {
     let deadline = Instant::now() + timeout;
 
-    let recv_state_mut = if let Some(state) = maybe_recv_state {
-        state
+    let recv_cursor_ref = if let Some(cursor) = recv_cursor {
+        cursor
     } else {
-        let mut payload_length_bytes = [0; FRAMED_PREFIX_LENGTH];
+        let mut payload_size_bytes = [0; FRAMED_PREFIX_LENGTH];
 
         loop {
-            let count = socket.peek(&mut payload_length_bytes).handle_try_again()?;
+            let count = socket.peek(&mut payload_size_bytes).handle_try_again()?;
             if count == FRAMED_PREFIX_LENGTH {
                 break;
             } else if Instant::now() > deadline {
@@ -61,34 +121,29 @@ fn framed_recv<R: DeserializeOwned>(
             }
         }
 
-        let packet_length =
-            FRAMED_PREFIX_LENGTH + u32::from_be_bytes(payload_length_bytes) as usize;
+        let size = FRAMED_PREFIX_LENGTH + u32::from_le_bytes(payload_size_bytes) as usize;
+        buffer.resize(size, 0);
 
-        if buffer.len() < packet_length {
-            buffer.resize(packet_length, 0);
-        }
-
-        maybe_recv_state.insert(RecvState {
-            packet_length,
-            packet_cursor: 0,
-        })
+        recv_cursor.insert(0)
     };
 
     loop {
-        recv_state_mut.packet_cursor +=
-            socket.recv(&mut buffer[recv_state_mut.packet_cursor..recv_state_mut.packet_length])?;
+        *recv_cursor_ref += socket
+            .read(&mut buffer[*recv_cursor_ref..])
+            .handle_try_again()?;
 
-        if recv_state_mut.packet_cursor == recv_state_mut.packet_length {
+        if *recv_cursor_ref == buffer.len() {
             break;
         } else if Instant::now() > deadline {
             return alvr_common::try_again();
         }
     }
 
-    let packet = bincode::deserialize(&buffer[FRAMED_PREFIX_LENGTH..recv_state_mut.packet_length])
-        .to_con()?;
+    let (packet, _) =
+        bincode::serde::decode_from_slice(&buffer[FRAMED_PREFIX_LENGTH..], config::standard())
+            .to_con()?;
 
-    *maybe_recv_state = None;
+    *recv_cursor = None;
 
     Ok(packet)
 }
@@ -108,7 +163,7 @@ impl<S: Serialize> ControlSocketSender<S> {
 pub struct ControlSocketReceiver<T> {
     inner: TcpStream,
     buffer: Vec<u8>,
-    recv_state: Option<RecvState>,
+    recv_cursor: Option<usize>,
     _phantom: PhantomData<T>,
 }
 
@@ -117,20 +172,14 @@ impl<R: DeserializeOwned> ControlSocketReceiver<R> {
         framed_recv(
             &mut self.inner,
             &mut self.buffer,
-            &mut self.recv_state,
+            &mut self.recv_cursor,
             timeout,
         )
     }
 }
 
 pub fn get_server_listener(timeout: Duration) -> Result<TcpListener> {
-    let listener = tcp::bind(
-        timeout,
-        CONTROL_PORT,
-        None,
-        SocketBufferSize::Default,
-        SocketBufferSize::Default,
-    )?;
+    let listener = bind(timeout, CONTROL_PORT, None, SocketBufferConfig::default())?;
 
     Ok(listener)
 }
@@ -150,16 +199,9 @@ impl ProtoControlSocket {
     pub fn connect_to(timeout: Duration, peer: PeerType<'_>) -> ConResult<(Self, IpAddr)> {
         let socket = match peer {
             PeerType::AnyClient(ips) => {
-                tcp::connect_to_client(
-                    timeout,
-                    &ips,
-                    CONTROL_PORT,
-                    SocketBufferSize::Default,
-                    SocketBufferSize::Default,
-                )?
-                .0
+                connect_to_client(timeout, &ips, CONTROL_PORT, SocketBufferConfig::default())?.0
             }
-            PeerType::Server(listener) => tcp::accept_from_server(listener, None, timeout)?.0,
+            PeerType::Server(listener) => accept_from_server(listener, None, timeout)?.0,
         };
 
         let peer_ip = socket.peer_addr().to_con()?.ip();
@@ -184,13 +226,13 @@ impl ProtoControlSocket {
         Ok((
             ControlSocketSender {
                 inner: self.inner.try_clone()?,
-                buffer: vec![],
+                buffer: vec![0; FRAMED_PREFIX_LENGTH],
                 _phantom: PhantomData,
             },
             ControlSocketReceiver {
                 inner: self.inner,
-                buffer: vec![],
-                recv_state: None,
+                buffer: vec![0; FRAMED_PREFIX_LENGTH],
+                recv_cursor: None,
                 _phantom: PhantomData,
             },
         ))

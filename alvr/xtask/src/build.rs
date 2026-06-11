@@ -1,4 +1,3 @@
-use crate::command;
 use alvr_filesystem::{self as afs, Layout};
 use std::{
     env,
@@ -7,7 +6,7 @@ use std::{
     path::PathBuf,
     vec,
 };
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 #[derive(Clone, Copy)]
 pub enum Profile {
@@ -130,10 +129,17 @@ pub fn build_streamer(
 
     // build server
     {
-        let gpl_flag = gpl.then(|| vec!["--features", "gpl"]).unwrap_or_default();
-        let profiling_flag = profiling
-            .then(|| vec!["--features", "alvr_server_core/trace-performance"])
-            .unwrap_or_default();
+        let gpl_flag = if gpl {
+            vec!["--features", "gpl"]
+        } else {
+            vec![]
+        };
+
+        let profiling_flag = if profiling {
+            vec!["--features", "alvr_server_core/trace-performance"]
+        } else {
+            vec![]
+        };
 
         let _push_guard = sh.push_dir(afs::crate_dir("server_openvr"));
         cmd!(
@@ -180,14 +186,6 @@ pub fn build_streamer(
         )
         .unwrap();
 
-        // Bring along the c++ runtime
-        command::copy_recursive(
-            &sh,
-            &afs::crate_dir("server_openvr").join("cpp/bin/windows"),
-            &build_layout.openvr_driver_lib_dir(),
-        )
-        .unwrap();
-
         // copy ffmpeg binaries
         if gpl {
             let bin_dir = &build_layout.openvr_driver_lib_dir();
@@ -201,6 +199,13 @@ pub fn build_streamer(
                 sh.copy_file(lib_path.clone(), bin_dir).unwrap();
             }
         }
+
+        // copy libvpl.dll
+        sh.copy_file(
+            afs::deps_dir().join("windows/libvpl/alvr_build/bin/libvpl.dll"),
+            build_layout.openvr_driver_lib_dir(),
+        )
+        .unwrap();
     } else if cfg!(target_os = "linux") {
         // build compositor wrapper
         let _push_guard = sh.push_dir(afs::crate_dir("vrcompositor_wrapper"));
@@ -301,7 +306,7 @@ pub fn build_launcher(profile: Profile, reproducible: bool) {
 fn build_android_lib_impl(dir_name: &str, profile: Profile, link_stdcpp: bool, all_targets: bool) {
     let sh = Shell::new().unwrap();
 
-    let mut ndk_flags = vec!["--no-strip", "-p", "26", "-t", "arm64-v8a"];
+    let mut ndk_flags = vec!["--no-strip", "-p", "28", "-t", "arm64-v8a"];
 
     if all_targets {
         ndk_flags.extend(["-t", "armeabi-v7a", "-t", "x86_64", "-t", "x86"]);

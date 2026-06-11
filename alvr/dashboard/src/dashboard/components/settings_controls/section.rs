@@ -1,10 +1,10 @@
-use super::{collapsible, notice, NestingInfo, SettingControl, INDENTATION_STEP};
+use super::{INDENTATION_STEP, NestingInfo, SettingControl, collapsible, notice};
 use alvr_gui_common::{
-    theme::{
-        log_colors::{INFO_LIGHT, WARNING_LIGHT},
-        OK_GREEN,
-    },
     DisplayString,
+    theme::{
+        OK_GREEN,
+        log_colors::{INFO_LIGHT, WARNING_LIGHT},
+    },
 };
 use alvr_packets::PathValuePair;
 use alvr_session::settings_schema::{SchemaEntry, SchemaNode};
@@ -111,35 +111,23 @@ impl Control {
                     ui.add_space(INDENTATION_STEP * self.nesting_info.indentation_level as f32);
                     let label_res = ui.label(&entry.id.display);
                     if cfg!(debug_assertions) {
-                        label_res.on_hover_text(&*entry.id);
+                        label_res.on_hover_text_at_pointer(&*entry.id);
                     }
 
                     if let Some(string) = &entry.help {
-                        if ui.colored_label(INFO_LIGHT, "❓").hovered() {
-                            alvr_gui_common::tooltip(
-                                ui,
-                                &format!("{}_help_tooltip", entry.id.display),
-                                string,
+                        ui.colored_label(INFO_LIGHT, "❓")
+                            .on_hover_text_at_pointer(string);
+                    }
+                    if entry.steamvr_restart_flag {
+                        ui.colored_label(WARNING_LIGHT, "⚠")
+                            .on_hover_text_at_pointer(
+                                "Changing this setting will make SteamVR restart!\n\
+                                Please save your in-game progress first",
                             );
-                        }
                     }
-                    if entry.steamvr_restart_flag && ui.colored_label(WARNING_LIGHT, "⚠").hovered()
-                    {
-                        alvr_gui_common::tooltip(
-                            ui,
-                            "steamvr_restart_tooltip",
-                            &format!(
-                                "Changing this setting will make SteamVR restart!\n{}",
-                                "Please save your in-game progress first"
-                            ),
-                        );
-                    }
-
-                    // The emoji is blue but it will be green in the UI
-                    if entry.real_time_flag && ui.colored_label(OK_GREEN, "🔵").hovered() {
-                        alvr_gui_common::tooltip(
-                            ui,
-                            "real_time_tooltip",
+                    if entry.real_time_flag {
+                        // The emoji is blue but it will be green in the UI
+                        ui.colored_label(OK_GREEN, "🔵").on_hover_text_at_pointer(
                             "This setting can be changed in real-time during streaming!",
                         );
                     }

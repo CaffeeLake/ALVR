@@ -1,5 +1,5 @@
 use alvr_common::{
-    DebugGroupsConfig, DebugGroupsConfigDefault, LogSeverity, LogSeverityDefault,
+    ALVR_VERSION, DebugGroupsConfig, DebugGroupsConfigDefault, LogSeverity, LogSeverityDefault,
     LogSeverityDefaultVariant,
 };
 use alvr_system_info::{ClientFlavor, ClientFlavorDefault, ClientFlavorDefaultVariant};
@@ -43,7 +43,7 @@ pub enum FrameSize {
 
 #[repr(u32)]
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
-pub enum EncoderQualityPresetAmd {
+pub enum EncoderQualityPreset {
     Quality = 0,
     Balanced = 1,
     Speed = 2,
@@ -162,16 +162,6 @@ Temporal: Helps improve overall encoding quality, very small trade-off in speed.
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
 #[schema(collapsible)]
 pub struct AmfConfig {
-    #[schema(flag = "steamvr-restart")]
-    pub quality_preset: EncoderQualityPresetAmd,
-    #[schema(
-        strings(
-            display_name = "Enable VBAQ/CAQ",
-            help = "Enables Variance Based Adaptive Quantization on h264 and HEVC, and Content Adaptive Quantization on AV1"
-        ),
-        flag = "steamvr-restart"
-    )]
-    pub enable_vbaq: bool,
     #[schema(
         strings(
             display_name = "Enable High-Motion Quality Boost",
@@ -201,6 +191,7 @@ Does not work with the "Reduce color banding" option, requires enabling "Use pre
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
+#[schema(collapsible)]
 pub struct SoftwareEncodingConfig {
     #[schema(strings(
         display_name = "Force software encoding",
@@ -216,85 +207,13 @@ pub struct SoftwareEncodingConfig {
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
 #[schema(collapsible)]
-pub struct EncoderConfig {
-    #[schema(strings(help = r#"CBR: Constant BitRate mode. This is recommended.
-VBR: Variable BitRate mode. Not commended because it may throw off the adaptive bitrate algorithm. This is only supported on Windows and only with AMD/Nvidia GPUs"#))]
-    #[schema(flag = "steamvr-restart")]
-    pub rate_control_mode: RateControlMode,
-
-    #[schema(strings(
-        help = r#"In CBR mode, this makes sure the bitrate does not fall below the assigned value. This is mostly useful for debugging."#
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub filler_data: bool,
-
-    #[schema(strings(
-        display_name = "h264: Profile",
-        help = "Whenever possible, attempts to use this profile. May increase compatibility with varying mobile devices. Only has an effect for h264. Doesn't affect NVENC on Windows."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub h264_profile: H264Profile,
-
-    #[schema(strings(help = r#"CAVLC algorithm is recommended.
-CABAC produces better compression but it's significantly slower and may lead to runaway latency"#))]
-    #[schema(flag = "steamvr-restart")]
-    pub entropy_coding: EntropyCoding,
-
-    #[schema(strings(
-        display_name = "10-bit encoding",
-        help = "Sets the encoder to use 10 bits per channel instead of 8, if the client has no preference. Does not work on Linux with Nvidia"
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub use_10bit: bool,
-
-    #[schema(strings(
-        display_name = "Override for 10-bit encoding",
-        help = "The server will override the headset client's preference for 10-bit encoding."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub server_overrides_use_10bit: bool,
-
-    #[schema(strings(
-        display_name = "Full range color",
-        help = "Sets the encoder to encode full range RGB (0-255) instead of limited/video range RGB (16-235), if the client has no preference"
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub use_full_range: bool,
-
-    #[schema(strings(
-        display_name = "Override for full range color",
-        help = "The server will override the headset client's preference for full range color."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub server_overrides_use_full_range: bool,
-
-    #[schema(strings(
-        display_name = "Encoding Gamma",
-        help = "To prioritize darker pixels at the expense of potentially additional banding in midtones, set to 2.2. To allow the encoder to decide priority on its own, set to 1.0."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub encoding_gamma: f32,
-
-    #[schema(strings(
-        display_name = "Override for encoding gamma",
-        help = "The server will override the headset client's preference for encoding gamma."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub server_overrides_encoding_gamma: bool,
-
+pub struct HDRConfig {
     #[schema(strings(
         display_name = "Enable HDR",
         help = "If the client has no preference, enables compositing VR layers to an RGBA float16 framebuffer, and doing sRGB/YUV conversions in shader code."
     ))]
     #[schema(flag = "steamvr-restart")]
-    pub enable_hdr: bool,
-
-    #[schema(strings(
-        display_name = "Override for HDR",
-        help = "The server will override the headset client's preference for HDR."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub server_overrides_enable_hdr: bool,
+    pub enable: Option<bool>,
 
     #[schema(strings(
         display_name = "Force HDR sRGB Correction",
@@ -309,15 +228,79 @@ CABAC produces better compression but it's significantly slower and may lead to 
     ))]
     #[schema(flag = "steamvr-restart")]
     pub clamp_hdr_extended_range: bool,
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
+#[schema(collapsible)]
+pub struct EncoderConfig {
+    #[schema(flag = "steamvr-restart")]
+    #[schema(strings(
+        display_name = "Quality preset",
+        help = "Controls overall quality preset of the encoder. Works only on Windows AMD AMF, Linux VAAPI (AMD/Intel)."
+    ))]
+    pub quality_preset: EncoderQualityPreset,
+
+    #[schema(
+        strings(
+            display_name = "Enable VBAQ/CAQ",
+            help = "Enables Variance Based Adaptive Quantization on h264 and HEVC, and Content Adaptive Quantization on AV1"
+        ),
+        flag = "steamvr-restart"
+    )]
+    pub enable_vbaq: bool,
+
+    #[cfg_attr(not(target_os = "windows"), schema(flag = "hidden"))]
+    #[schema(strings(help = r#"CBR: Constant BitRate mode. This is recommended.
+VBR: Variable BitRate mode. Not commended because it may throw off the adaptive bitrate algorithm. This is only supported on Windows and only with AMD/Nvidia GPUs"#))]
+    #[schema(flag = "steamvr-restart")]
+    pub rate_control_mode: RateControlMode,
+
+    #[schema(strings(
+        display_name = "h264: Profile",
+        help = "Whenever possible, attempts to use this profile. May increase compatibility with varying mobile devices. Only has an effect for h264. Doesn't affect NVENC on Windows."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub h264_profile: H264Profile,
+
+    #[schema(strings(help = r#"CAVLC algorithm is recommended.
+CABAC produces better compression but it's significantly slower and may lead to runaway latency"#))]
+    #[schema(flag = "steamvr-restart")]
+    pub entropy_coding: EntropyCoding,
+
+    #[schema(strings(
+        help = r#"In CBR mode, this makes sure the bitrate does not fall below the assigned value. This is mostly useful for debugging."#
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub filler_data: bool,
+
+    #[schema(strings(
+        display_name = "10-bit encoding",
+        help = "Sets the encoder to use 10 bits per channel instead of 8, if the client has no preference. Does not work on Linux with Nvidia"
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub use_10bit: Option<bool>,
+
+    #[schema(strings(
+        display_name = "Encoding Gamma",
+        help = "To prioritize darker pixels at the expense of potentially additional banding in midtones, set to 2.2. To allow the encoder to decide priority on its own, set to 1.0."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub encoding_gamma: Option<f32>,
+
+    #[schema(strings(display_name = "HDR"))]
+    #[schema(flag = "steamvr-restart")]
+    pub hdr: HDRConfig,
 
     #[schema(strings(display_name = "NVENC"))]
     #[schema(flag = "steamvr-restart")]
     pub nvenc: NvencConfig,
 
+    #[cfg_attr(not(target_os = "windows"), schema(flag = "hidden"))]
     #[schema(strings(display_name = "AMF"))]
     #[schema(flag = "steamvr-restart")]
     pub amf: AmfConfig,
 
+    #[schema(strings(display_name = "Software (CPU) encoding"))]
     pub software: SoftwareEncodingConfig,
 }
 
@@ -472,6 +455,7 @@ pub struct ClientsideFoveationConfig {
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
+#[schema(collapsible)]
 pub struct FoveatedEncodingConfig {
     #[schema(strings(help = "Force enable on smartphone clients"))]
     pub force_enable: bool,
@@ -741,6 +725,7 @@ If you want to reduce the amount of pixelation on the edges, increase the center
     #[schema(gui(slider(min = 0.50, max = 0.99, step = 0.01)))]
     pub buffering_history_weight: f32,
 
+    #[cfg_attr(not(target_os = "windows"), schema(flag = "hidden"))]
     #[schema(strings(
         help = r"This works only on Windows. It shouldn't be disabled except in certain circumstances when you know the VR game will not meet the target framerate."
     ))]
@@ -774,10 +759,14 @@ If you want to reduce the amount of pixelation on the edges, increase the center
     #[schema(flag = "steamvr-restart")]
     pub preferred_fps: f32,
 
-    #[schema(strings(help = "You probably don't want to change this"))]
+    #[cfg_attr(not(target_os = "windows"), schema(flag = "hidden"))]
+    #[schema(strings(
+        help = "You probably don't want to change this. Allows for changing adapter for ALVR compositor."
+    ))]
     #[schema(flag = "steamvr-restart")]
     pub adapter_index: u32,
 
+    #[schema(strings(display_name = "Client-side foveation"))]
     pub clientside_foveation: Switch<ClientsideFoveationConfig>,
 
     #[schema(strings(
@@ -828,6 +817,8 @@ pub struct GameAudioConfig {
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub enum MicrophoneDevicesConfig {
     Automatic,
+    #[schema(strings(display_name = "Virtual Audio Cable"))]
+    VAC,
     #[schema(strings(display_name = "VB Cable"))]
     VBCable,
     #[schema(strings(display_name = "VoiceMeeter"))]
@@ -836,8 +827,6 @@ pub enum MicrophoneDevicesConfig {
     VoiceMeeterAux,
     #[schema(strings(display_name = "VoiceMeeter VAIO3"))]
     VoiceMeeterVaio3,
-    #[schema(strings(display_name = "Virtual Audio Cable"))]
-    VAC,
     Custom {
         #[schema(strings(help = "This device is used by ALVR to output microphone audio"))]
         sink: CustomAudioDeviceConfig,
@@ -866,7 +855,7 @@ pub struct AudioConfig {
         windows,
         schema(strings(
             display_name = "Headset microphone",
-            notice = r"To be able to use the microphone on Windows, you need to install VB-Cable or VoiceMeeter"
+            notice = r"To be able to use the microphone on Windows, you need to install Virtual Audio Cable"
         ))
     )]
     #[cfg_attr(not(windows), schema(strings(display_name = "Headset microphone")))]
@@ -877,23 +866,52 @@ pub struct AudioConfig {
 pub enum HeadsetEmulationMode {
     #[schema(strings(display_name = "Rift S"))]
     RiftS,
+    #[schema(strings(display_name = "Quest 1"))]
+    Quest1,
     #[schema(strings(display_name = "Quest 2"))]
     Quest2,
     #[schema(strings(display_name = "Quest Pro"))]
     QuestPro,
+    #[schema(strings(display_name = "Pico 4"))]
+    Pico4,
     Vive,
     Custom {
         serial_number: String,
     },
 }
 
+#[derive(SettingsSchema, Serialize, Deserialize, PartialEq, Clone)]
+pub enum PerformanceLevel {
+    #[schema(strings(display_name = "Power Saving"))]
+    PowerSavings,
+    #[schema(strings(display_name = "Sustained Low"))]
+    SustainedLow,
+    #[schema(strings(display_name = "Sustained High"))]
+    SustainedHigh,
+    #[schema(flag = "hidden")]
+    Boost,
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, PartialEq, Clone)]
+pub struct PerformanceLevelConfig {
+    #[schema(flag = "real-time")]
+    #[schema(strings(
+        display_name = "CPU",
+        help = "When disabling this, the client needs to be restarted for the change to be applied."
+    ))]
+    pub cpu: Switch<PerformanceLevel>,
+    #[schema(flag = "real-time")]
+    #[schema(strings(
+        display_name = "GPU",
+        help = "When disabling this, the client needs to be restarted for the change to be applied."
+    ))]
+    pub gpu: Switch<PerformanceLevel>,
+}
+
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
-pub struct FaceTrackingSourcesConfig {
-    pub eye_tracking_fb: bool,
-    pub face_tracking_fb: bool,
-    pub eye_expressions_htc: bool,
-    pub lip_expressions_htc: bool,
-    pub face_tracking_pico: bool,
+pub enum FaceTrackingSourcesConfig {
+    PreferEyeTrackingOnly,
+    PreferFullFaceTracking,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
@@ -911,22 +929,11 @@ pub struct FaceTrackingConfig {
     pub sink: FaceTrackingSinkConfig,
 }
 
-#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
-pub struct BodyTrackingSourcesConfig {
-    pub body_tracking_fb: Switch<BodyTrackingFBConfig>,
-    #[schema(strings(
-        help = "It's recommended to set Tracking Mode to Full-Body Tracking in Motion Tracker app settings on your Pico headset."
-    ))]
-    pub body_tracking_bd: Switch<BodyTrackingBDConfig>,
-    // todo:
-    // pub detached_controllers_as_feet: bool,
-    // unfortunately multimodal is incompatible with body tracking. To make this usable we need to
-    // at least add support for an android client as 3dof waist tracker.
-}
-
-#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
-pub struct BodyTrackingFBConfig {
-    pub full_body: bool,
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq, Default)]
+pub struct BodyTrackingMetaConfig {
+    pub prefer_full_body: bool,
+    #[schema(strings(help = "Prefer active upper body tracking, Quest 3 only"))]
+    pub prefer_high_fidelity: bool,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
@@ -943,8 +950,15 @@ pub enum BodyTrackingBDConfig {
         ))]
         prompt_calibration_on_start: bool,
     },
+
     #[schema(strings(display_name = "Object Tracking"))]
     ObjectTracking,
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
+pub struct BodyTrackingSourcesConfig {
+    pub meta: BodyTrackingMetaConfig,
+    pub bd: BodyTrackingBDConfig,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
@@ -981,6 +995,8 @@ pub struct VMCConfig {
 pub enum ControllersEmulationMode {
     #[schema(strings(display_name = "Rift S Touch"))]
     RiftSTouch,
+    #[schema(strings(display_name = "Quest 1 Touch"))]
+    Quest1Touch,
     #[schema(strings(display_name = "Quest 2 Touch"))]
     Quest2Touch,
     #[schema(strings(display_name = "Quest 3 Touch Plus"))]
@@ -989,6 +1005,8 @@ pub enum ControllersEmulationMode {
     QuestPro,
     #[schema(strings(display_name = "Pico 4"))]
     Pico4,
+    #[schema(strings(display_name = "PSVR2 Sense Controller"))]
+    PSVR2Sense,
     #[schema(strings(display_name = "Valve Index"))]
     ValveIndex,
     #[schema(strings(display_name = "Vive Wand"))]
@@ -1144,6 +1162,7 @@ pub struct HapticsConfig {
 pub struct HandSkeletonConfig {
     #[schema(flag = "steamvr-restart")]
     #[schema(strings(
+        display_name = "SteamVR input 2.0",
         help = r"Enabling this will use separate tracker objects with the full skeletal tracking level when hand tracking is detected. This is required for VRChat hand tracking."
     ))]
     pub steamvr_input_2_0: bool,
@@ -1168,12 +1187,6 @@ pub struct ControllersConfig {
     ))]
     pub hand_skeleton: Switch<HandSkeletonConfig>,
 
-    #[schema(strings(
-        help = r"Track hand skeleton while holding controllers. This will reduce hand tracking frequency to 30Hz.
-Because of runtime limitations, this option is ignored when body tracking is active."
-    ))]
-    pub multimodal_tracking: bool,
-
     #[schema(flag = "real-time")]
     #[schema(strings(
         help = "Enabling this allows using hand gestures to emulate controller inputs."
@@ -1196,6 +1209,7 @@ Currently this cannot be reliably estimated automatically. The correct value sho
     pub emulation_mode: ControllersEmulationMode,
 
     #[schema(flag = "steamvr-restart")]
+    #[schema(strings(display_name = "Extra OpenVR properties"))]
     pub extra_openvr_props: Vec<OpenvrProperty>,
 
     #[schema(flag = "real-time")]
@@ -1236,40 +1250,64 @@ Currently this cannot be reliably estimated automatically. The correct value sho
     pub button_mapping_config: AutomaticButtonMappingConfig,
 }
 
-#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy)]
-pub enum PositionRecenteringMode {
-    Disabled,
+#[derive(SettingsSchema, Serialize, Deserialize, Clone)]
+pub enum RecenteringMode {
+    Stage,
     LocalFloor,
     Local {
         #[schema(gui(slider(min = 0.0, max = 3.0)), suffix = "m")]
         view_height: f32,
     },
+    Tilted {
+        #[schema(gui(slider(min = 0.0, max = 3.0)), suffix = "m")]
+        view_height: f32,
+    },
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone)]
+pub struct MarkerColocationConfig {
+    #[schema(strings(display_string = "QR Code string"))]
+    pub qr_code_string: String,
+
+    #[schema(flag = "real-time")]
+    #[schema(strings(
+        help = r"Offset coordinate on the floor between the marker and the playspace origin.
+The height of the marker doesn't need to be measured"
+    ))]
+    #[schema(suffix = "m")]
+    pub floor_offset: [f32; 2],
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy)]
-pub enum RotationRecenteringMode {
-    Disabled,
-    Yaw,
-    Tilted,
+pub struct MultimodalTracking {
+    pub enabled: bool,
+
+    #[schema(flag = "steamvr-restart")]
+    #[schema(strings(
+        display_name = "Map non-held controllers to SteamVR trackers",
+        help = "Non-held controllers are mapped to left and right feet.
+This will be configurable in the future."
+    ))]
+    pub detached_controllers_steamvr_sink: bool,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub struct HeadsetConfig {
     #[schema(strings(
-        help = r#"Disabled: the playspace origin is determined by the room-scale guardian setup.
-Local floor: the origin is on the floor and resets when long pressing the oculus button.
-Local: the origin resets when long pressing the oculus button, and is calculated as an offset from the current head position."#
+        help = r"Stage: the playspace origin is determined by the room-scale guardian setup. Can be synchnonized using a marker.
+Local floor: the origin is on the floor and resets when long pressing the recentering button.
+Local: the origin resets when long pressing the recentering button, and is calculated as an offset from the current head position.
+Tilted: the world gets tilted when long pressing the recentering button. This is useful for using VR while laying down."
     ))]
     #[schema(flag = "real-time")]
-    pub position_recentering_mode: PositionRecenteringMode,
+    pub recentering_mode: RecenteringMode,
 
     #[schema(strings(
-        help = r#"Disabled: the playspace orientation is determined by the room-scale guardian setup.
-Yaw: the forward direction is reset when long pressing the oculus button.
-Tilted: the world gets tilted when long pressing the oculus button. This is useful for using VR while laying down."#
+        string = "Marker-based co-location",
+        help = "Use a QR code to synchronize the playspace origin between players.",
+        notice = "Print at https://www.qr-code-generator.com"
     ))]
-    #[schema(flag = "real-time")]
-    pub rotation_recentering_mode: RotationRecenteringMode,
+    pub marker_colocation: Switch<MarkerColocationConfig>,
 
     #[schema(flag = "steamvr-restart")]
     pub controllers: Switch<ControllersConfig>,
@@ -1277,7 +1315,16 @@ Tilted: the world gets tilted when long pressing the oculus button. This is usef
     #[schema(flag = "steamvr-restart")]
     pub emulation_mode: HeadsetEmulationMode,
 
+    #[schema(strings(
+        help = r#"Power Savings might increase latency or reduce framerate consistency but decreases temperatures and improves battery life.
+Sustained Low provides consistent framerates but might increase latency if necessary.
+Sustained High provides consistent framerates but increases temperature.
+This is mainly for Quest headsets, mileage may vary on other devices."#
+    ))]
+    pub performance_level: PerformanceLevelConfig,
+
     #[schema(flag = "steamvr-restart")]
+    #[schema(strings(display_name = "Extra OpenVR properties"))]
     pub extra_openvr_props: Vec<OpenvrProperty>,
 
     #[schema(flag = "steamvr-restart")]
@@ -1287,6 +1334,13 @@ Tilted: the world gets tilted when long pressing the oculus button. This is usef
     pub enable_vive_tracker_proxy: bool,
 
     pub face_tracking: Switch<FaceTrackingConfig>,
+
+    #[schema(flag = "steamvr-restart")]
+    #[schema(strings(
+        help = r"Track hand skeleton while holding controllers. This will reduce hand tracking frequency to 30Hz.
+Because of runtime limitations, this option is ignored when body tracking is active."
+    ))]
+    pub multimodal_tracking: Switch<MultimodalTracking>,
 
     #[schema(flag = "steamvr-restart")]
     pub body_tracking: Switch<BodyTrackingConfig>,
@@ -1320,11 +1374,28 @@ pub struct DiscoveryConfig {
     pub auto_trust_clients: bool,
 }
 
-#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy)]
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy, Default)]
 pub enum SocketBufferSize {
+    #[default]
     Default,
     Maximum,
     Custom(#[schema(suffix = "B")] u32),
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, Copy, Default)]
+pub struct SocketBufferConfig {
+    #[schema(strings(display_name = "Send size"))]
+    pub send_size_bytes: SocketBufferSize,
+    #[schema(strings(display_name = "Receive size"))]
+    pub recv_size_bytes: SocketBufferSize,
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone)]
+pub struct WiredClientAutoLaunchConfig {
+    #[schema(strings(
+        help = "Delay in seconds to wait after booting the headset before trying to launch the client."
+    ))]
+    pub boot_delay: u32,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
@@ -1345,7 +1416,7 @@ TCP: Slower than UDP, but more stable. Pick this if you experience video or audi
     #[schema(strings(
         help = r#"Wether ALVR should try to automatically launch the client when establishing a wired connection."#
     ))]
-    pub wired_client_autolaunch: bool,
+    pub wired_client_autolaunch: Switch<WiredClientAutoLaunchConfig>,
 
     #[cfg_attr(
         windows,
@@ -1377,14 +1448,13 @@ TCP: Slower than UDP, but more stable. Pick this if you experience video or audi
     pub enable_on_disconnect_script: bool,
 
     #[schema(strings(
+        display_name = "Allow untrusted HTTP",
         help = "Allow cross-origin browser requests to control ALVR settings remotely."
     ))]
-    #[schema(flag = "real-time")]
     pub allow_untrusted_http: bool,
 
     #[schema(strings(
-        help = r#"If the client, server or the network discarded one packet, discard packets until a IDR packet is found.
-For now works only on Windows+Nvidia"#
+        help = r#"If the client, server or the network discarded one packet, discard packets until a IDR packet is found."#
     ))]
     pub avoid_video_glitching: bool,
 
@@ -1393,19 +1463,12 @@ For now works only on Windows+Nvidia"#
 
     pub stream_port: u16,
     pub web_server_port: u16,
+
+    #[schema(strings(display_name = "Local OSC port"))]
     pub osc_local_port: u16,
 
-    #[schema(strings(display_name = "Streamer send buffer size"))]
-    pub server_send_buffer_bytes: SocketBufferSize,
-
-    #[schema(strings(display_name = "Streamer receive buffer size"))]
-    pub server_recv_buffer_bytes: SocketBufferSize,
-
-    #[schema(strings(display_name = "Client send buffer size"))]
-    pub client_send_buffer_bytes: SocketBufferSize,
-
-    #[schema(strings(display_name = "Client receive buffer size"))]
-    pub client_recv_buffer_bytes: SocketBufferSize,
+    pub server_buffer_config: SocketBufferConfig,
+    pub client_buffer_config: SocketBufferConfig,
 
     #[schema(strings(
         help = r#"The server discards video packets if it can't push them to the network.
@@ -1421,6 +1484,7 @@ This could happen on TCP. A IDR frame is requested in this case."#
     #[schema(gui(slider(min = 5, max = 1000, step = 5)), suffix = "ms")]
     pub minimum_idr_interval_ms: u64,
 
+    #[schema(strings(display_name = "DSCP (packet prio hints)"))]
     pub dscp: Option<DscpTos>,
 }
 
@@ -1490,8 +1554,23 @@ pub struct LoggingConfig {
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub struct SteamvrLauncher {
-    #[schema(strings(display_name = "Open and close SteamVR with dashboard"))]
+    #[schema(strings(
+        display_name = "Open and close SteamVR automatically",
+        help = "Launches SteamVR automatically when the ALVR dashboard is opened, and closes it when the dashboard is closed."
+    ))]
     pub open_close_steamvr_with_dashboard: bool,
+
+    #[cfg_attr(
+        windows,
+        schema(strings(help = "Directly start the VR server, bypassing Steam. \
+                Will run start_server.bat if it exists alongside session.json, and try to automatically find SteamVR otherwise."))
+    )]
+    #[cfg_attr(
+        not(windows),
+        schema(strings(help = "Directly start the VR server, bypassing Steam. \
+                Will run start_server.sh if it exists alongside session.json, and try to automatically find SteamVR otherwise."))
+    )]
+    pub direct_launch: bool,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
@@ -1527,10 +1606,17 @@ pub struct Patches {
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
+pub struct NewVersionPopupConfig {
+    pub hide_while_version: String,
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub struct ExtraConfig {
+    #[schema(strings(display_name = "SteamVR Launcher"))]
     pub steamvr_launcher: SteamvrLauncher,
     pub capture: CaptureConfig,
     pub logging: LoggingConfig,
+    #[cfg_attr(not(target_os = "linux"), schema(flag = "hidden"))]
     pub patches: Patches,
 
     #[schema(
@@ -1540,6 +1626,7 @@ It does not update in real time.")
     pub velocities_multiplier: f32,
 
     pub open_setup_wizard: bool,
+    pub new_version_popup: Switch<NewVersionPopupConfig>,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
@@ -1581,6 +1668,10 @@ pub fn session_settings_default() -> SettingsDefault {
     let socket_buffer = SocketBufferSizeDefault {
         Custom: 100000,
         variant: SocketBufferSizeDefaultVariant::Maximum,
+    };
+    let socket_buffer_config = SocketBufferConfigDefault {
+        send_size_bytes: socket_buffer.clone(),
+        recv_size_bytes: socket_buffer,
     };
 
     SettingsDefault {
@@ -1704,16 +1795,23 @@ pub fn session_settings_default() -> SettingsDefault {
                 entropy_coding: EntropyCodingDefault {
                     variant: EntropyCodingDefaultVariant::Cavlc,
                 },
-                use_10bit: false,
-                server_overrides_use_10bit: false,
-                use_full_range: true,
-                server_overrides_use_full_range: false,
-                encoding_gamma: 1.0,
-                server_overrides_encoding_gamma: false,
-                enable_hdr: false,
-                server_overrides_enable_hdr: false,
-                force_hdr_srgb_correction: false,
-                clamp_hdr_extended_range: false,
+                use_10bit: OptionalDefault {
+                    set: false,
+                    content: false,
+                },
+                encoding_gamma: OptionalDefault {
+                    set: false,
+                    content: 1.0,
+                },
+                hdr: HDRConfigDefault {
+                    gui_collapsed: true,
+                    enable: OptionalDefault {
+                        set: false,
+                        content: false,
+                    },
+                    force_hdr_srgb_correction: false,
+                    clamp_hdr_extended_range: false,
+                },
                 nvenc: NvencConfigDefault {
                     gui_collapsed: true,
                     quality_preset: EncoderQualityPresetNvidiaDefault {
@@ -1743,19 +1841,20 @@ pub fn session_settings_default() -> SettingsDefault {
                     rc_average_bitrate: -1,
                     enable_weighted_prediction: false,
                 },
+                quality_preset: EncoderQualityPresetDefault {
+                    variant: EncoderQualityPresetDefaultVariant::Speed,
+                },
+                enable_vbaq: false,
                 amf: AmfConfigDefault {
                     gui_collapsed: true,
-                    quality_preset: EncoderQualityPresetAmdDefault {
-                        variant: EncoderQualityPresetAmdDefaultVariant::Speed,
-                    },
                     enable_pre_analysis: false,
-                    enable_vbaq: false,
                     enable_hmqb: false,
                     use_preproc: false,
                     preproc_sigma: 4,
                     preproc_tor: 7,
                 },
                 software: SoftwareEncodingConfigDefault {
+                    gui_collapsed: true,
                     force_software_encoding: false,
                     thread_count: 0,
                 },
@@ -1789,6 +1888,7 @@ pub fn session_settings_default() -> SettingsDefault {
             foveated_encoding: SwitchDefault {
                 enabled: true,
                 content: FoveatedEncodingConfigDefault {
+                    gui_collapsed: true,
                     force_enable: false,
                     center_size_x: 0.45,
                     center_size_y: 0.4,
@@ -1872,6 +1972,20 @@ pub fn session_settings_default() -> SettingsDefault {
                 },
                 variant: HeadsetEmulationModeDefaultVariant::Quest2,
             },
+            performance_level: PerformanceLevelConfigDefault {
+                cpu: SwitchDefault {
+                    enabled: false,
+                    content: PerformanceLevelDefault {
+                        variant: PerformanceLevelDefaultVariant::PowerSavings,
+                    },
+                },
+                gpu: SwitchDefault {
+                    enabled: false,
+                    content: PerformanceLevelDefault {
+                        variant: PerformanceLevelDefaultVariant::PowerSavings,
+                    },
+                },
+            },
             extra_openvr_props: default_custom_openvr_props.clone(),
             tracking_ref_only: false,
             enable_vive_tracker_proxy: false,
@@ -1880,11 +1994,7 @@ pub fn session_settings_default() -> SettingsDefault {
                 content: FaceTrackingConfigDefault {
                     gui_collapsed: true,
                     sources: FaceTrackingSourcesConfigDefault {
-                        eye_tracking_fb: true,
-                        face_tracking_fb: true,
-                        eye_expressions_htc: true,
-                        lip_expressions_htc: true,
-                        face_tracking_pico: true,
+                        variant: FaceTrackingSourcesConfigDefaultVariant::PreferFullFaceTracking,
                     },
                     sink: FaceTrackingSinkConfigDefault {
                         VrchatEyeOsc: FaceTrackingSinkConfigVrchatEyeOscDefault { port: 9000 },
@@ -1892,24 +2002,28 @@ pub fn session_settings_default() -> SettingsDefault {
                     },
                 },
             },
+            multimodal_tracking: SwitchDefault {
+                enabled: false,
+                content: MultimodalTrackingDefault {
+                    enabled: true,
+                    detached_controllers_steamvr_sink: false,
+                },
+            },
             body_tracking: SwitchDefault {
                 enabled: false,
                 content: BodyTrackingConfigDefault {
                     gui_collapsed: true,
                     sources: BodyTrackingSourcesConfigDefault {
-                        body_tracking_fb: SwitchDefault {
-                            enabled: true,
-                            content: BodyTrackingFBConfigDefault { full_body: true },
+                        meta: BodyTrackingMetaConfigDefault {
+                            prefer_full_body: true,
+                            prefer_high_fidelity: true,
                         },
-                        body_tracking_bd: SwitchDefault {
-                            enabled: true,
-                            content: BodyTrackingBDConfigDefault {
-                                BodyTracking: BodyTrackingBDConfigBodyTrackingDefault {
-                                    high_accuracy: true,
-                                    prompt_calibration_on_start: true,
-                                },
-                                variant: BodyTrackingBDConfigDefaultVariant::BodyTracking,
+                        bd: BodyTrackingBDConfigDefault {
+                            BodyTracking: BodyTrackingBDConfigBodyTrackingDefault {
+                                high_accuracy: true,
+                                prompt_calibration_on_start: true,
                             },
+                            variant: BodyTrackingBDConfigDefaultVariant::BodyTracking,
                         },
                     },
                     sink: BodyTrackingSinkConfigDefault {
@@ -1941,7 +2055,6 @@ pub fn session_settings_default() -> SettingsDefault {
                             predict: false,
                         },
                     },
-                    multimodal_tracking: false,
                     emulation_mode: ControllersEmulationModeDefault {
                         Custom: ControllersEmulationModeCustomDefault {
                             serial_number: "ALVR Controller".into(),
@@ -2045,12 +2158,20 @@ pub fn session_settings_default() -> SettingsDefault {
                     },
                 },
             },
-            position_recentering_mode: PositionRecenteringModeDefault {
-                Local: PositionRecenteringModeLocalDefault { view_height: 1.5 },
-                variant: PositionRecenteringModeDefaultVariant::LocalFloor,
+            recentering_mode: RecenteringModeDefault {
+                Local: RecenteringModeLocalDefault { view_height: 1.5 },
+                Tilted: RecenteringModeTiltedDefault { view_height: 1.5 },
+                variant: RecenteringModeDefaultVariant::LocalFloor,
             },
-            rotation_recentering_mode: RotationRecenteringModeDefault {
-                variant: RotationRecenteringModeDefaultVariant::Yaw,
+            marker_colocation: SwitchDefault {
+                enabled: false,
+                content: MarkerColocationConfigDefault {
+                    qr_code_string: String::new(),
+                    floor_offset: ArrayDefault {
+                        gui_collapsed: false,
+                        content: [0.0, 0.0],
+                    },
+                },
             },
             max_prediction_ms: 100,
         },
@@ -2072,7 +2193,10 @@ pub fn session_settings_default() -> SettingsDefault {
                     ClientFlavorDefaultVariant::Github
                 },
             },
-            wired_client_autolaunch: true,
+            wired_client_autolaunch: SwitchDefault {
+                enabled: true,
+                content: WiredClientAutoLaunchConfigDefault { boot_delay: 0 },
+            },
             web_server_port: 8082,
             stream_port: 9944,
             osc_local_port: 9942,
@@ -2089,10 +2213,8 @@ pub fn session_settings_default() -> SettingsDefault {
                     variant: DscpTosDefaultVariant::ExpeditedForwarding,
                 },
             },
-            server_send_buffer_bytes: socket_buffer.clone(),
-            server_recv_buffer_bytes: socket_buffer.clone(),
-            client_send_buffer_bytes: socket_buffer.clone(),
-            client_recv_buffer_bytes: socket_buffer,
+            server_buffer_config: socket_buffer_config.clone(),
+            client_buffer_config: socket_buffer_config,
             max_queued_server_video_frames: 1024,
             avoid_video_glitching: false,
             minimum_idr_interval_ms: 100,
@@ -2144,6 +2266,7 @@ pub fn session_settings_default() -> SettingsDefault {
             },
             steamvr_launcher: SteamvrLauncherDefault {
                 open_close_steamvr_with_dashboard: false,
+                direct_launch: false,
             },
             capture: CaptureConfigDefault {
                 startup_video_recording: false,
@@ -2163,6 +2286,12 @@ pub fn session_settings_default() -> SettingsDefault {
             },
             velocities_multiplier: 1.0,
             open_setup_wizard: alvr_common::is_stable() || alvr_common::is_nightly(),
+            new_version_popup: SwitchDefault {
+                enabled: alvr_common::is_stable(),
+                content: NewVersionPopupConfigDefault {
+                    hide_while_version: ALVR_VERSION.to_string(),
+                },
+            },
         },
     }
 }
